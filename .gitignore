@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+*.sqlite3
+node_modules/
+dist/
+staticfiles/
+.playwright/
+.ruff_cache/

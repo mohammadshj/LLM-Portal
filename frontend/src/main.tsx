@@ -5,9 +5,11 @@ import "./style.css";
 
 import type { User, Model, Conversation, Detail, Page, Usage } from "./types";
 import { MessageList } from "./MessageList";
+import { ThemeToggle, useTheme } from "./ThemeToggle";
 const number = (value: number) => value.toLocaleString("fa-IR");
 
 function App() {
+  const { theme, toggle } = useTheme();
   const [user, setUser] = useState<User | null>(null),
     [loading, setLoading] = useState(true);
   const [error, setError] = useState(""),
@@ -141,6 +143,9 @@ function App() {
     return (
       <main className="login">
         <section className="login-card">
+          <div className="login-toolbar">
+            <ThemeToggle theme={theme} toggle={toggle} />
+          </div>
           <div className="mark">پ</div>
           <span className="eyebrow">فضای اختصاصی شما</span>
           <h1>پورتال مدل‌های زبانی</h1>
@@ -256,6 +261,7 @@ function App() {
             <h1>{report ? "گزارش مصرف" : active?.title || "گفتگوی تازه"}</h1>
           </div>
           <div className="header-actions">
+            <ThemeToggle theme={theme} toggle={toggle} />
             {active && !report && (
               <button disabled={busy} onClick={remove}>
                 حذف گفتگو

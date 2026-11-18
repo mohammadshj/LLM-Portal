@@ -88,12 +88,51 @@ cd frontend && npm run build
 
 کاربرها را در `/admin/` بسازید. Account در اولین مراجعه ساخته می‌شود؛ برای تعیین سهمیه پیش از اولین ورود، Account را مستقیماً در Admin ایجاد کنید. `token_limit` سقف تجمعی است؛ برای تمدید اعتبار آن را افزایش دهید. بازنشانی خودکار ماهانه یا پرداخت آنلاین نداریم.
 
-برای مدل واقعی در Admin یک LanguageModel با provider برابر `openai`، شناسهٔ دقیق مدل، context window و سقف خروجی تأییدشده توسط ارائه‌دهنده اضافه کنید. `LLM_BASE_URL` (شامل `/v1`) و `LLM_API_KEY` تنها در محیط Backend تنظیم می‌شوند؛ سپس Backend را recreate کنید. کلید هرگز به React، API فهرست مدل‌ها یا مخزن فرستاده نمی‌شود. این نسخه یک endpoint/credential مشترک برای مدل‌های واقعی دارد؛ برای ارائه‌دهندهٔ دوم با قرارداد متفاوت آداپتور و تنظیمات مستقل اضافه شود. تنها مدل‌های Chat Completions با `max_tokens` و `usage.prompt_tokens/completion_tokens` پشتیبانی می‌شوند؛ همهٔ APIهای مدل‌ها سازگار نیستند.
+### افزودن سرویس و مدل‌های جدید
+
+دیگر یک کلید مشترک اجباری برای تمام مدل‌ها نداریم. در Admin، بخش **اتصال‌های سرویس مدل** (`ModelConnection`) آدرس API و **نام متغیر محیطی کلید** را نگه می‌دارد. هر `LanguageModel` به یک اتصال اشاره می‌کند. تعداد اتصال‌ها و مدل‌های ثبت‌شده سقف ثابت نرم‌افزاری ندارد؛ محدودیت هر درخواست مقایسه همچنان حداکثر سه مدل است.
+
+مثال تنظیمات سرور (مقادیر واقعی را فقط در `.env` وارد کنید):
+
+```dotenv
+LLM_OPENAI_API_KEY=
+LLM_OPENROUTER_API_KEY=
+```
+
+سپس در Admin دو اتصال بسازید:
+
+| نام اتصال | base_url | api_key_env |
+| --- | --- | --- |
+| سرویس OpenAI | `https://api.openai.com/v1` | `LLM_OPENAI_API_KEY` |
+| سرویس OpenRouter | `https://openrouter.ai/api/v1` | `LLM_OPENROUTER_API_KEY` |
+
+برای هر مدل، `provider=openai` (یعنی **پروتکل سازگار با OpenAI**)، اتصال مناسب، `model_id` دقیق طبق مستندات همان سرویس، context window و سقف خروجی را انتخاب کنید. چند مدل می‌توانند یک اتصال و یک کلید داشته باشند؛ حتی دو مدل با model_id یکسان می‌توانند از دو اتصال مستقل استفاده کنند. نام نمایشی مدل‌ها را متمایز انتخاب کنید تا مقایسه روشن بماند.
+
+- افزودن مدل به اتصال موجود: فقط ثبت در Admin؛ تغییر کد، متغیر محیطی و build Frontend لازم نیست.
+- افزودن سرویس مستقل: متغیر جدیدی مانند `LLM_SERVICE3_API_KEY` در `.env` تعریف کنید، Backend را recreate کنید و اتصال را در Admin بسازید. نام متغیر باید الگوی `LLM_<NAME>_API_KEY` یا `LLM_API_KEY` داشته باشد. فقط نام متغیر را در Admin بنویسید، نه مقدار کلید.
+- سرویس محلی سازگار بدون احراز هویت: مثلاً آدرس `http://host.docker.internal:11434/v1` با api_key_env خالی؛ Backend در این حالت هدر Authorization ارسال نمی‌کند. دسترسی Docker به میزبان باید متناسب با سرور تنظیم شود؛ `localhost` داخل کانتینر خود همان کانتینر است. برای سرویس‌های خارجی از HTTPS استفاده کنید و فقط endpointهای مورد اعتماد ثبت کنید.
+- غیرفعال‌کردن اتصال، فراخوانی مدل‌های متصل به آن را متوقف می‌کند. اتصال دارای مدل قابل حذف نیست؛ ابتدا مدل‌ها را به اتصال دیگری منتقل کنید.
+
+تنها آداپتور واقعی فعلی، Chat Completions با `max_tokens` و `usage.prompt_tokens/completion_tokens` است. سرویس‌های دارای قرارداد متفاوت مانند API بومی Anthropic یا Gemini به آداپتور مستقل نیاز دارند؛ افزودن کلید به‌تنهایی آن‌ها را سازگار نمی‌کند. این مثال‌ها به معنی آزمون اتصال واقعی این سرویس‌ها نیستند.
+
+### ارتقا از تنظیم قبلی
+
+migration شمارهٔ `0003` یک «اتصال پیش‌فرض» با آدرس `LLM_BASE_URL` و ارجاع به `LLM_API_KEY` می‌سازد و تمام مدل‌های واقعی قبلی را به آن متصل می‌کند؛ مدل‌های نمایشی بدون اتصال باقی می‌مانند. خود کلید به پایگاه داده منتقل نمی‌شود. پس از این مهاجرت، آدرس هر اتصال در Admin مدیریت می‌شود و تغییر `LLM_BASE_URL` دیگر اتصال ثبت‌شده را تغییر نمی‌دهد.
+
+برای نسخهٔ جدید، ابتدا image Backend را بسازید، migration را اجرا و سپس سرویس را recreate کنید:
+
+```sh
+docker compose build backend cleanup
+docker compose run --rm backend python manage.py migrate
+docker compose up -d --force-recreate backend cleanup
+```
+
+افزودن/تعویض مقدار کلید در `.env` به recreate Backend نیاز دارد؛ `restart` به‌تنهایی متغیرهای جدید Compose را بارگذاری نمی‌کند. کلیدها نه در API مدل‌ها برگردانده می‌شوند، نه در React و نه در پایگاه داده ذخیره می‌شوند. جزئیات اتصال نیز از API عمومی مدل‌ها پنهان است؛ خطای یک اتصال به کلید اتصال دیگر fallback نمی‌کند.
 
 ## ساختار و منطق
 
 - `backend/config/`: تنظیمات محیط، URL و WSGI؛ PostgreSQL حالت پیش‌فرض.
-- `backend/portal/models.py`: جداول Account، LanguageModel، Conversation، Message و ModelUsage.
+- `backend/portal/models.py`: جداول Account، ModelConnection، LanguageModel، Conversation، Message و ModelUsage.
 - `serializers.py`: قرارداد JSON و اعتبارسنجی ورودی.
 - `views.py`: نشست، کنترل دسترسی و مسیرهای REST.
 - `services.py`: قوانین گفتگو، سهمیه و شاخه‌های مقایسه. تغییر قواعد کسب‌وکار عمدتاً اینجاست.

@@ -18,7 +18,9 @@ def send_message(user, conversation, content, model_ids):
         except Conversation.DoesNotExist:
             raise ValidationError("این گفتگو دیگر وجود ندارد.") from None
         models = list(
-            LanguageModel.objects.filter(pk__in=model_ids, enabled=True).order_by("id")
+            LanguageModel.objects.filter(pk__in=model_ids, enabled=True)
+            .select_related("connection")
+            .order_by("id")
         )
         if len(models) != len(model_ids):
             raise ValidationError("یکی از مدل‌ها موجود یا فعال نیست.")

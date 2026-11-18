@@ -1,7 +1,9 @@
 """Provider boundary: no credentials or raw upstream errors reach API responses."""
 
+import os
+
 import httpx
-from django.conf import settings
+from django.core.exceptions import ValidationError
 
 
 class ProviderError(Exception):
@@ -18,13 +20,30 @@ def complete(model, messages):
             sum(len(m["content"].encode()) for m in messages),
             len(text.encode()),
         )
-    if not settings.LLM_API_KEY:
-        raise ProviderError("کلید سرویس مدل در سرور تنظیم نشده است.")
+    if model.provider != "openai":
+        raise ProviderError("نوع ارتباط این مدل پشتیبانی نمی‌شود.")
+    connection = model.connection
+    if connection is None or not connection.enabled:
+        raise ProviderError("اتصال سرویس مدل تنظیم نشده یا غیرفعال است.")
     try:
-        with httpx.Client(timeout=httpx.Timeout(45, connect=10)) as client:
+        # Revalidate even if a non-admin script bypassed Django form validation.
+        connection.clean()
+    except ValidationError:
+        raise ProviderError("تنظیمات اتصال سرویس مدل معتبر نیست.") from None
+    headers = {}
+    if connection.api_key_env:
+        key = os.environ.get(connection.api_key_env, "").strip()
+        if not key:
+            raise ProviderError("کلید این اتصال در محیط سرور تنظیم نشده است.")
+        headers["Authorization"] = f"Bearer {key}"
+
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(45, connect=10), follow_redirects=False
+        ) as client:
             response = client.post(
-                f"{settings.LLM_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.LLM_API_KEY}"},
+                f"{connection.base_url}/chat/completions",
+                headers=headers,
                 json={
                     "model": model.model_id,
                     "messages": messages,

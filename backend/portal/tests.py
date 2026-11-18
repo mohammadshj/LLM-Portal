@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier
@@ -12,7 +13,14 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient
 
-from .models import Account, Conversation, LanguageModel, Message, ModelUsage
+from .models import (
+    Account,
+    Conversation,
+    LanguageModel,
+    Message,
+    ModelConnection,
+    ModelUsage,
+)
 from .providers import ProviderError, complete
 from .services import send_message
 
@@ -145,7 +153,12 @@ class PortalTests(TestCase):
 
     def test_missing_real_provider_key(self):
         self.a.provider = "openai"
-        with self.settings(LLM_API_KEY=""):
+        self.a.connection = ModelConnection.objects.create(
+            name="missing key",
+            base_url="https://missing.example/v1",
+            api_key_env="LLM_API_KEY",
+        )
+        with patch.dict(os.environ, {"LLM_API_KEY": ""}):
             with self.assertRaises(ProviderError):
                 complete(self.a, [{"role": "user", "content": "test"}])
 

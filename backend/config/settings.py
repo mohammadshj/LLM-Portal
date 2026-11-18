@@ -101,6 +101,6 @@ SESSION_COOKIE_AGE = 1800
 SESSION_SAVE_EVERY_REQUEST = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = "DENY"
-# Endpoint and credential can only be supplied by the operator, never by clients.
+# Legacy endpoint is read only when migration 0003 creates the default connection.
+# New endpoints live in ModelConnection; keys are resolved from the environment.
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")

@@ -11,5 +11,10 @@ urlpatterns = [
     path("models/", views.Models.as_view()),
     path("conversations/", views.Conversations.as_view()),
     path("conversations/<int:pk>/", views.conversation_detail),
+    path("conversations/<int:pk>/stream/", views.ConversationStream.as_view()),
+    path(
+        "conversations/<int:pk>/requests/<uuid:request_id>/cancel/",
+        views.cancel_generation,
+    ),
     path("usage/", views.usage),
 ]

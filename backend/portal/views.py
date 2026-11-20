@@ -11,7 +11,9 @@ from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
 from rest_framework import generics, permissions
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .models import Account, Conversation, LanguageModel, ModelUsage
 from .serializers import (
@@ -20,7 +22,8 @@ from .serializers import (
     ModelSerializer,
     SendSerializer,
 )
-from .services import send_message
+from .services import delete_conversation, request_cancel, reserve_turn
+from .streaming import EventStreamResponse, TurnStream, send_message
 
 
 @require_GET
@@ -99,29 +102,64 @@ class Conversations(generics.ListCreateAPIView):
         serializer.save(user=self.request.user)
 
 
-@api_view(["GET", "POST", "DELETE"])
-def conversation_detail(request, pk):
-    conversation = get_object_or_404(
+def owned_conversation(request, pk):
+    return get_object_or_404(
         Conversation,
         pk=pk,
         user=request.user,
         created_at__gte=timezone.now() - timedelta(days=30),
     )
+
+
+class ConversationStream(APIView):
+    # The successful response is SSE. DRF validation/auth errors are JSON
+    # even when the caller explicitly requested text/event-stream.
+    def perform_content_negotiation(self, request, force=False):
+        return JSONRenderer(), "application/json"
+
+    def post(self, request, pk):
+        conversation = owned_conversation(request, pk)
+        serializer = SendSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        turn, jobs = reserve_turn(
+            request.user, conversation, **serializer.validated_data
+        )
+        return EventStreamResponse(TurnStream(turn, jobs))
+
+
+@api_view(["POST"])
+def cancel_generation(request, pk, request_id):
+    conversation = owned_conversation(request, pk)
+    cancelling = request_cancel(request.user, conversation, request_id)
+    return Response({"status": "cancelling" if cancelling else "finished"})
+
+
+@api_view(["GET", "POST", "DELETE"])
+def conversation_detail(request, pk):
+    conversation = owned_conversation(request, pk)
     if request.method == "DELETE":
-        conversation.delete()
+        delete_conversation(request.user, conversation)
         return Response(status=204)
     errors = []
     if request.method == "POST":
         serializer = SendSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         errors = send_message(request.user, conversation, **serializer.validated_data)
+    messages = list(conversation.messages.select_related("model"))
+    active_request_id = next(
+        (
+            m.request_id
+            for m in reversed(messages)
+            if m.role == "user" and m.status == "running"
+        ),
+        None,
+    )
     return Response(
         {
             "id": conversation.id,
+            "active_request_id": active_request_id,
             "title": conversation.title,
-            "messages": MessageSerializer(
-                conversation.messages.select_related("model"), many=True
-            ).data,
+            "messages": MessageSerializer(messages, many=True).data,
             "errors": errors,
         }
     )

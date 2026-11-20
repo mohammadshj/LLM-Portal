@@ -3,9 +3,10 @@ import { createRoot } from "react-dom/client";
 import { api, refreshCsrf } from "./api";
 import "./style.css";
 
-import type { User, Model, Conversation, Detail, Page, Usage } from "./types";
+import type { User, Model, Conversation, Page, Usage } from "./types";
 import { MessageList } from "./MessageList";
 import { ThemeToggle, useTheme } from "./ThemeToggle";
+import { useChats } from "./useChats";
 const number = (value: number) => value.toLocaleString("fa-IR");
 
 function App() {
@@ -16,39 +17,16 @@ function App() {
     [busy, setBusy] = useState(false);
   const [username, setUsername] = useState(""),
     [password, setPassword] = useState("");
-  const [models, setModels] = useState<Model[]>([]),
-    [selected, setSelected] = useState<number[]>([]);
-  const [conversations, setConversations] = useState<Conversation[]>([]),
-    [next, setNext] = useState<string | null>(null);
-  const [active, setActive] = useState<Detail | null>(null),
-    [prompt, setPrompt] = useState("");
-  const [report, setReport] = useState<Usage | null>(null);
-  const end = useRef<HTMLDivElement>(null);
-  async function loadHistory(path = "conversations/", append = false) {
-    const page = await api<Page>(path);
-    setConversations((old) =>
-      append ? [...old, ...page.results] : page.results,
-    );
-    setNext(page.next);
-  }
-  async function loadWorkspace() {
-    const [me, available] = await Promise.all([
-      api<User>("auth/me/"),
-      api<Model[]>("models/"),
-    ]);
-    setUser(me);
-    setModels(available);
-    setSelected(available.length ? [available[0].id] : []);
-    await loadHistory();
-  }
   useEffect(() => {
-    loadWorkspace()
+    const controller = new AbortController();
+    api<User>("auth/me/", "GET", undefined, controller.signal)
+      .then(setUser)
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
   }, []);
-  useEffect(() => {
-    end.current?.scrollIntoView({ behavior: "smooth" });
-  }, [active]);
   async function login(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -57,80 +35,11 @@ function App() {
       await api("auth/login/", "POST", { username, password });
       setPassword("");
       await refreshCsrf();
-      await loadWorkspace();
+      setUser(await api<User>("auth/me/"));
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
-    }
-  }
-  async function send(event: React.FormEvent) {
-    event.preventDefault();
-    if (!prompt.trim() || !selected.length) return;
-    setBusy(true);
-    setError("");
-    setReport(null);
-    try {
-      const conversation =
-        active ??
-        (await api<Conversation>("conversations/", "POST", {
-          title: prompt.trim().slice(0, 80),
-        }));
-      // Keep a newly created conversation even if the subsequent request fails.
-      if (!active) setActive({ ...conversation, messages: [], errors: [] });
-      const detail = await api<Detail>(
-        `conversations/${conversation.id}/`,
-        "POST",
-        { content: prompt, model_ids: selected },
-      );
-      setActive(detail);
-      setPrompt("");
-      setError(detail.errors.map((e) => `${e.model}: ${e.detail}`).join(" / "));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      try {
-        setUser(await api<User>("auth/me/"));
-        await loadHistory();
-      } catch {}
-      setBusy(false);
-    }
-  }
-  async function open(id: number) {
-    setBusy(true);
-    setError("");
-    setReport(null);
-    try {
-      setActive(await api<Detail>(`conversations/${id}/`));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function remove() {
-    if (!active || !window.confirm("این گفتگو حذف شود؟")) return;
-    setBusy(true);
-    try {
-      await api(`conversations/${active.id}/`, "DELETE");
-      setActive(null);
-      await loadHistory();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function logout() {
-    try {
-      await api("auth/logout/", "POST");
-      setUser(null);
-      setActive(null);
-      setReport(null);
-      setConversations([]);
-      await refreshCsrf();
-    } catch (e) {
-      setError((e as Error).message);
     }
   }
   if (loading)
@@ -185,6 +94,147 @@ function App() {
         </section>
       </main>
     );
+  return <Workspace initialUser={user} onLogout={() => setUser(null)} />;
+}
+
+function Workspace({
+  initialUser,
+  onLogout,
+}: {
+  initialUser: User;
+  onLogout: () => void;
+}) {
+  const { theme, toggle } = useTheme();
+  const [user, setUser] = useState(initialUser);
+  const [error, setError] = useState("");
+  const [models, setModels] = useState<Model[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [next, setNext] = useState<string | null>(null);
+  const [report, setReport] = useState<Usage | null>(null);
+  const [paging, setPaging] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const reportVersion = useRef(0);
+  const end = useRef<HTMLDivElement>(null);
+  const meRead = useRef(0);
+  const initialLoad = useRef<AbortController | null>(null);
+  const listChanges = useRef(new Set<number>());
+  useEffect(() => {
+    const controller = new AbortController();
+    initialLoad.current = controller;
+    api<Model[]>("models/", "GET", undefined, controller.signal)
+      .then(setModels)
+      .catch((e) => {
+        if (!controller.signal.aborted) setError(e.message);
+      });
+    api<Page>("conversations/", "GET", undefined, controller.signal)
+      .then((page) => {
+        setConversations((old) => [
+          ...old,
+          ...page.results.filter((c) => !listChanges.current.has(c.id)),
+        ]);
+        setNext(page.next);
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) setError(e.message);
+      });
+    return () => controller.abort();
+  }, []);
+  async function loadMore() {
+    if (!next || paging) return;
+    setPaging(true);
+    try {
+      const page = await api<Page>(
+        `conversations/${new URL(next, window.location.href).search}`,
+      );
+      setConversations((old) => [
+        ...old,
+        ...page.results.filter(
+          (c) =>
+            !listChanges.current.has(c.id) &&
+            !old.some((item) => item.id === c.id),
+        ),
+      ]);
+      setNext(page.next);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPaging(false);
+    }
+  }
+  async function refreshUsage() {
+    const version = ++meRead.current;
+    try {
+      const me = await api<User>(
+        "auth/me/",
+        "GET",
+        undefined,
+        initialLoad.current?.signal,
+      );
+      if (version === meRead.current) setUser(me);
+    } catch {
+      /* Keep the last confirmed quota if the server is unreachable. */
+    }
+  }
+  const chats = useChats((c) => {
+    listChanges.current.add(c.id);
+    setConversations((old) => [c, ...old.filter((item) => item.id !== c.id)]);
+  }, refreshUsage);
+  const { activeId, chat, messages } = chats;
+  const active = chat.detail ?? conversations.find((c) => c.id === activeId);
+  const processing = chats.busy(activeId);
+  const selected = chat.selection ?? (models.length ? [models[0].id] : []);
+  const prompt = chat.prompt;
+  const last = messages.at(-1);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: "nearest" });
+  }, [
+    activeId,
+    last?.id,
+    last?.content,
+    chat.live?.messages.map((m) => m.content.length).join(","),
+  ]);
+  function switchView(action: () => void) {
+    ++reportVersion.current;
+    setReport(null);
+    setError("");
+    action();
+  }
+  async function openReport() {
+    const version = ++reportVersion.current;
+    try {
+      const data = await api<Usage>("usage/");
+      if (version === reportVersion.current) setReport(data);
+    } catch (e) {
+      if (version === reportVersion.current) setError((e as Error).message);
+    }
+  }
+  async function remove() {
+    const id = await chats.remove();
+    if (id !== undefined) {
+      listChanges.current.add(id);
+      setConversations((old) => old.filter((c) => c.id !== id));
+    }
+  }
+  async function logout() {
+    setLoggingOut(true);
+    try {
+      await api("auth/logout/", "POST");
+      onLogout();
+      await refreshCsrf();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoggingOut(false);
+    }
+  }
+  function send(event: React.FormEvent) {
+    event.preventDefault();
+    void chats.send(
+      selected
+        .map((id) => models.find((m) => m.id === id))
+        .filter((m): m is Model => m !== undefined),
+    );
+  }
   return (
     <div className="app">
       <aside>
@@ -195,16 +245,7 @@ function App() {
             <small>فضایی برای پاسخ‌های بهتر</small>
           </div>
         </div>
-        <button
-          className="new"
-          disabled={busy}
-          onClick={() => {
-            setActive(null);
-            setReport(null);
-            setError("");
-            setPrompt("");
-          }}
-        >
+        <button className="new" onClick={() => switchView(chats.newChat)}>
           ＋ گفتگوی تازه
         </button>
         <details className="history" open>
@@ -212,25 +253,17 @@ function App() {
           <nav aria-label="تاریخچه گفتگو">
             {conversations.map((c) => (
               <button
-                disabled={busy}
                 key={c.id}
                 className={active?.id === c.id ? "current" : ""}
-                onClick={() => open(c.id)}
+                onClick={() => switchView(() => chats.open(c.id))}
               >
-                ◌ {c.title}
+                {c.title}
+                {chats.busy(c.id) && <small> · در حال پاسخ</small>}
               </button>
             ))}
             {!conversations.length && <small>هنوز گفتگویی ندارید.</small>}
             {next && (
-              <button
-                disabled={busy}
-                onClick={() =>
-                  loadHistory(
-                    `conversations/${new URL(next).search}`,
-                    true,
-                  ).catch((e) => setError(e.message))
-                }
-              >
+              <button disabled={paging} onClick={loadMore}>
                 گفتگوهای بیشتر
               </button>
             )}
@@ -249,7 +282,7 @@ function App() {
         </div>
         <div className="account">
           <span>◉ {user.username}</span>
-          <button onClick={logout} disabled={busy}>
+          <button onClick={logout} disabled={loggingOut}>
             خروج
           </button>
         </div>
@@ -263,30 +296,26 @@ function App() {
           <div className="header-actions">
             <ThemeToggle theme={theme} toggle={toggle} />
             {active && !report && (
-              <button disabled={busy} onClick={remove}>
+              <button disabled={processing || chat.removing} onClick={remove}>
                 حذف گفتگو
               </button>
             )}
             {user.is_staff && (
               <>
-                <button
-                  disabled={busy}
-                  onClick={() =>
-                    api<Usage>("usage/")
-                      .then(setReport)
-                      .catch((e) => setError(e.message))
-                  }
-                >
-                  گزارش مصرف
-                </button>
+                <button onClick={openReport}>گزارش مصرف</button>
                 <a href="/admin/">مدیریت ↗</a>
               </>
             )}
           </div>
         </header>
-        {error && (
+        {(error || (!report && chat.error)) && (
           <div className="error banner" role="alert">
-            {error}
+            {error || chat.error}
+            {activeId > 0 && !report && (
+              <button onClick={() => chats.open(activeId)}>
+                بازخوانی گفتگو
+              </button>
+            )}
           </div>
         )}
         {report ? (
@@ -337,7 +366,9 @@ function App() {
               aria-label="پیام‌های گفتگو"
               aria-live="polite"
             >
-              {!active?.messages.length ? (
+              {chat.loading && !messages.length ? (
+                <p role="status">در حال دریافت گفتگو…</p>
+              ) : !messages.length ? (
                 <div className="welcome">
                   <span className="welcome-symbol">✳</span>
                   <span className="eyebrow">گفتگو از یک پرسش آغاز می‌شود</span>
@@ -352,7 +383,7 @@ function App() {
                       "برای یک مسئله چند راه‌حل پیشنهاد کن",
                       "یک متن را بررسی و بازنویسی کن",
                     ].map((s) => (
-                      <button key={s} onClick={() => setPrompt(s)}>
+                      <button key={s} onClick={() => chats.setPrompt(s)}>
                         {s}
                         <span>↖</span>
                       </button>
@@ -361,11 +392,25 @@ function App() {
                 </div>
               ) : (
                 <div className="messages">
-                  <MessageList messages={active.messages} />
+                  <MessageList
+                    messages={messages}
+                    retry={
+                      !processing
+                        ? (content, modelId) => {
+                            chats.setPrompt(content);
+                            if (modelId && models.some((m) => m.id === modelId))
+                              chats.setSelection([modelId]);
+                            document
+                              .querySelector<HTMLTextAreaElement>("#prompt")
+                              ?.focus();
+                          }
+                        : undefined
+                    }
+                  />
                   <div ref={end} />
                 </div>
               )}
-              {busy && (
+              {processing && (
                 <p className="working" role="status">
                   در حال پردازش درخواست…
                 </p>
@@ -386,14 +431,14 @@ function App() {
                         type="checkbox"
                         checked={selected.includes(m.id)}
                         disabled={
-                          busy ||
+                          processing ||
                           (!selected.includes(m.id) && selected.length >= 3)
                         }
                         onChange={() =>
-                          setSelected((old) =>
-                            old.includes(m.id)
-                              ? old.filter((id) => id !== m.id)
-                              : [...old, m.id],
+                          chats.setSelection(
+                            selected.includes(m.id)
+                              ? selected.filter((id) => id !== m.id)
+                              : [...selected, m.id],
                           )
                         }
                       />
@@ -415,21 +460,37 @@ function App() {
                   placeholder="پیام خود را اینجا بنویسید…"
                   maxLength={12000}
                   value={prompt}
-                  disabled={busy}
-                  onChange={(e) => setPrompt(e.target.value)}
+                  disabled={processing || chat.removing}
+                  onChange={(e) => chats.setPrompt(e.target.value)}
                 />
                 <div>
                   <small>{number(prompt.length)} / ۱۲٬۰۰۰</small>
-                  <button
-                    className="primary"
-                    disabled={busy || !prompt.trim() || !selected.length}
-                  >
-                    {busy
-                      ? "در حال دریافت…"
-                      : selected.length > 1
+                  {processing ? (
+                    <button
+                      type="button"
+                      className="stop"
+                      onClick={chats.stop}
+                      disabled={chat.live?.stopping}
+                      aria-label="توقف پاسخ‌های این گفتگو"
+                    >
+                      {chat.live?.stopping ? "در حال توقف…" : "توقف پاسخ"}
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      className="primary"
+                      disabled={
+                        chat.loading ||
+                        chat.removing ||
+                        !prompt.trim() ||
+                        !selected.length
+                      }
+                    >
+                      {selected.length > 1
                         ? "مقایسهٔ پاسخ‌ها ↑"
                         : "ارسال پیام ↑"}
-                  </button>
+                    </button>
+                  )}
                 </div>
               </form>
               <p className="footnote">

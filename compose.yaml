@@ -17,6 +17,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    stop_grace_period: 35s
     env_file: .env
     environment:
       POSTGRES_HOST: db
@@ -47,7 +48,17 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["sh", "-c", "while true; do python manage.py purge_history || exit 1; sleep 86400; done"]
+    command:
+      - sh
+      - -ec
+      - |
+        minute=0
+        while true; do
+          python manage.py recover_reservations
+          if [ "$$minute" -eq 0 ]; then python manage.py purge_history; fi
+          minute=$$(( (minute + 1) % 1440 ))
+          sleep 60
+        done
     restart: unless-stopped
 volumes:
   postgres_data:

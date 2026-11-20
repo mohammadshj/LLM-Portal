@@ -34,6 +34,10 @@ class ModelConnection(models.Model):
     )
     enabled = models.BooleanField(default=True, verbose_name="فعال")
 
+    streaming_enabled = models.BooleanField(
+        default=True, verbose_name="ارسال درخواست جریانی"
+    )
+
     class Meta:
         verbose_name = "اتصال سرویس مدل"
         verbose_name_plural = "اتصال‌های سرویس مدل"
@@ -107,8 +111,35 @@ class Message(models.Model):
     output_tokens = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # User rows are turns; each selected model gets a child row before dispatch.
+    parent = models.ForeignKey(
+        "self", null=True, on_delete=models.CASCADE, related_name="replies"
+    )
+    request_id = models.UUIDField(null=True)
+    status = models.CharField(max_length=12, default="completed")
+    error = models.CharField(max_length=240, blank=True)
+    usage_source = models.CharField(max_length=12, default="none")
+    reserved_tokens = models.PositiveBigIntegerField(default=0)
+    # Saved at admission so later model edits cannot change an in-flight budget.
+    input_bound = models.PositiveIntegerField(default=0)
+    lease_until = models.DateTimeField(null=True, db_index=True)
+    cancel_requested = models.BooleanField(default=False)
+
     class Meta:
         ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["conversation"],
+                condition=models.Q(role="user", status="running"),
+                name="one_running_turn_per_chat",
+            ),
+            models.UniqueConstraint(
+                fields=["conversation", "request_id"], name="unique_chat_request"
+            ),
+            models.UniqueConstraint(
+                fields=["parent", "model"], name="unique_reply_model"
+            ),
+        ]
 
 
 class ModelUsage(models.Model):

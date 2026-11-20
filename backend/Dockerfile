@@ -10,4 +10,4 @@ RUN useradd --create-home portal && mkdir /app/staticfiles && chown portal:porta
 COPY --chown=portal:portal backend/ .
 RUN chmod -R a+rX /app
 USER portal
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "180", "--access-logfile", "-"]
+CMD ["uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-graceful-shutdown", "25"]

@@ -1,5 +1,7 @@
+import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import timedelta
 from threading import Barrier
 from time import sleep
@@ -21,8 +23,25 @@ from .models import (
     ModelConnection,
     ModelUsage,
 )
-from .providers import ProviderError, complete
-from .services import send_message
+from .providers import ProviderError, ProviderEvent, complete
+from .streaming import send_message
+
+
+@contextmanager
+def mock_completion(**kwargs):
+    # A controlled async provider still goes through the real merge/settlement path.
+    from unittest.mock import Mock
+
+    mock = Mock(**kwargs)
+
+    async def generate(model, messages):
+        text, incoming, outgoing = await asyncio.to_thread(mock, model, messages)
+        yield ProviderEvent("delta", text=text)
+        yield ProviderEvent("usage", input_tokens=incoming, output_tokens=outgoing)
+        yield ProviderEvent("done")
+
+    with patch("portal.streaming.stream_complete", generate):
+        yield mock
 
 
 class PortalTests(TestCase):
@@ -63,9 +82,7 @@ class PortalTests(TestCase):
         self.assertEqual(self.client.get("/api/conversations/").data["results"], [])
 
     def test_comparison_records_usage_and_separate_histories(self):
-        with patch(
-            "portal.services.complete", return_value=("answer", 10, 20)
-        ) as provider:
+        with mock_completion(return_value=("answer", 10, 20)) as provider:
             self.assertEqual(
                 self.send(model_ids=[self.a.pk, self.b.pk]).status_code, 200
             )
@@ -82,7 +99,7 @@ class PortalTests(TestCase):
     def test_insufficient_quota_never_calls_provider(self):
         self.account.token_limit = 1
         self.account.save()
-        with patch("portal.services.complete") as provider:
+        with mock_completion() as provider:
             self.assertEqual(self.send().status_code, 400)
             provider.assert_not_called()
         self.assertFalse(Message.objects.exists())
@@ -90,7 +107,7 @@ class PortalTests(TestCase):
     def test_context_rejection_never_calls_provider(self):
         self.a.context_window = 10
         self.a.save()
-        with patch("portal.services.complete") as provider:
+        with mock_completion() as provider:
             self.assertEqual(self.send().status_code, 400)
             provider.assert_not_called()
 
@@ -102,15 +119,19 @@ class PortalTests(TestCase):
         self.assertEqual(self.send().status_code, 400)
 
     def test_partial_failure_preserves_success_and_usage(self):
-        with patch(
-            "portal.services.complete",
+        with mock_completion(
             side_effect=[("answer", 10, 20), ProviderError("unavailable")],
         ):
             result = self.send(model_ids=[self.a.pk, self.b.pk])
         self.assertEqual(len(result.data["errors"]), 1)
         self.account.refresh_from_db()
         self.assertEqual(self.account.tokens_used, 30)
-        self.assertEqual(Message.objects.filter(role="assistant").count(), 1)
+        self.assertEqual(
+            Message.objects.filter(role="assistant", status="completed").count(), 1
+        )
+        self.assertEqual(
+            Message.objects.filter(role="assistant", status="failed").count(), 1
+        )
 
     def test_retention_preserves_usage(self):
         self.send()
@@ -189,7 +210,7 @@ class ConcurrentQuotaTests(TransactionTestCase):
             finally:
                 connection.close()
 
-        with patch("portal.services.complete", side_effect=provider) as upstream:
+        with mock_completion(side_effect=provider) as upstream:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 outcomes = list(pool.map(worker, range(2)))
         self.assertCountEqual(outcomes, ["sent", "quota"])

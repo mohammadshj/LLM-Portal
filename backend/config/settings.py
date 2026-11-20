@@ -104,3 +104,8 @@ X_FRAME_OPTIONS = "DENY"
 # Legacy endpoint is read only when migration 0003 creates the default connection.
 # New endpoints live in ModelConnection; keys are resolved from the environment.
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+
+# Seconds. The read timeout is the longest idle interval between upstream bytes.
+LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "10"))
+LLM_READ_TIMEOUT = float(os.getenv("LLM_READ_TIMEOUT", "90"))
+LLM_TOTAL_TIMEOUT = float(os.getenv("LLM_TOTAL_TIMEOUT", "300"))

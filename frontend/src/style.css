@@ -675,3 +675,7 @@ th {
     padding: 24px;
   }
 }
+.stop { color: var(--error-text); border-color: currentColor; background: var(--surface); }
+.reply-error, .retry { display: block; margin-top: 0.5rem; }
+.reply-error { color: var(--error-text); }
+.retry { font-size: 0.8rem; }

@@ -16,10 +16,17 @@ export type Message = {
   role: "user" | "assistant";
   content: string;
   model_name: string | null;
+  status?: "running" | "completed" | "partial" | "failed" | "cancelled";
+  request_id?: string | null;
+  model_id?: number | null;
+  parent_id?: number | null;
+  error?: string;
+  usage_source?: "reported" | "estimated" | "unknown" | "none";
   input_tokens: number;
   output_tokens: number;
 };
 export type Detail = Conversation & {
+  active_request_id?: string | null;
   messages: Message[];
   errors: { model: string; detail: string }[];
 };

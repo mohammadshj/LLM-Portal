@@ -20,11 +20,20 @@ from .providers import ProviderError, complete
 
 @contextmanager
 def upstream(handler):
+    async_class = httpx.AsyncClient
     client_class = httpx.Client
-    with patch(
-        "portal.providers.httpx.Client",
-        side_effect=lambda **kwargs: client_class(
-            transport=httpx.MockTransport(handler), **kwargs
+    with (
+        patch(
+            "portal.providers.httpx.Client",
+            side_effect=lambda **kwargs: client_class(
+                transport=httpx.MockTransport(handler), **kwargs
+            ),
+        ),
+        patch(
+            "portal.providers.httpx.AsyncClient",
+            side_effect=lambda **kw: async_class(
+                transport=httpx.MockTransport(handler), **kw
+            ),
         ),
     ):
         yield
@@ -343,4 +352,50 @@ class ConnectionMigrationTests(TransactionTestCase):
             self.assertEqual(migrated.api_key_env, "LLM_API_KEY")
             self.assertIsNone(Model.objects.get(pk=demo.pk).connection_id)
         finally:
-            MigrationExecutor(connection).migrate(after)
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def test_legacy_unanswered_questions_stay_out_of_model_context(self):
+        before = [("portal", "0003_modelconnection_languagemodel_connection")]
+        executor = MigrationExecutor(connection)
+        executor.migrate(before)
+        try:
+            apps = executor.loader.project_state(before).apps
+            user = apps.get_model("auth", "User").objects.create(username="history")
+            chat = apps.get_model("portal", "Conversation").objects.create(
+                user=user, title="old"
+            )
+            model = apps.get_model("portal", "LanguageModel").objects.create(
+                name="old", provider="demo"
+            )
+            rows = apps.get_model("portal", "Message").objects
+            orphan = rows.create(conversation=chat, role="user", content="unanswered")
+            prompt = rows.create(conversation=chat, role="user", content="answered")
+            answer = rows.create(
+                conversation=chat,
+                role="assistant",
+                content="ok",
+                model=model,
+                input_tokens=5,
+                output_tokens=1,
+            )
+        finally:
+            executor = MigrationExecutor(connection)
+            executor.migrate(executor.loader.graph.leaf_nodes())
+
+        from .models import Message
+        from .services import reserve_turn
+
+        self.assertEqual(Message.objects.get(pk=orphan.pk).status, "failed")
+        self.assertEqual(Message.objects.get(pk=prompt.pk).status, "completed")
+        reply = Message.objects.get(pk=answer.pk)
+        self.assertEqual(
+            (reply.parent_id, reply.input_tokens, reply.output_tokens),
+            (prompt.pk, 5, 1),
+        )
+        current_user = get_user_model().objects.get(pk=user.pk)
+        current_chat = Conversation.objects.get(pk=chat.pk)
+        _, jobs = reserve_turn(current_user, current_chat, "next", [model.pk])
+        self.assertEqual(
+            [m["content"] for m in jobs[0].messages], ["answered", "ok", "next"]
+        )

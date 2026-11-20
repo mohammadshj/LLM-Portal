@@ -21,6 +21,12 @@ class MessageSerializer(serializers.ModelSerializer):
             "role",
             "content",
             "model_name",
+            "model_id",
+            "parent_id",
+            "status",
+            "request_id",
+            "error",
+            "usage_source",
             "input_tokens",
             "output_tokens",
             "created_at",
@@ -34,6 +40,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
 
 class SendSerializer(serializers.Serializer):
+    request_id = serializers.UUIDField(required=False)
     content = serializers.CharField(max_length=12000, trim_whitespace=True)
     model_ids = serializers.ListField(
         child=serializers.IntegerField(min_value=1), min_length=1, max_length=3

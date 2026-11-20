@@ -4,20 +4,27 @@ export async function refreshCsrf() {
   if (!response.ok) throw new Error("ارتباط با سرور ممکن نشد.");
   csrfToken = (await response.json()).csrfToken;
 }
-export async function api<T>(
+
+export async function request(
   path: string,
   method = "GET",
   body?: unknown,
-): Promise<T> {
+  signal?: AbortSignal,
+  accept = "application/json",
+) {
   if (method !== "GET" && !csrfToken) await refreshCsrf();
   const response = await fetch(`/api/${path}`, {
     method,
-    headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
+    signal,
+    headers: {
+      Accept: accept,
+      "Content-Type": "application/json",
+      "X-CSRFToken": csrfToken,
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (response.status === 204) return undefined as T;
-  const data = await response.json().catch(() => null);
-  if (!response.ok)
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
     throw new Error(
       typeof data?.detail === "string"
         ? data.detail
@@ -25,5 +32,16 @@ export async function api<T>(
           ? data.join(" ")
           : "درخواست انجام نشد. ورودی و دسترسی خود را بررسی کنید.",
     );
-  return data;
+  }
+  return response;
+}
+
+export async function api<T>(
+  path: string,
+  method = "GET",
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await request(path, method, body, signal);
+  return response.status === 204 ? (undefined as T) : response.json();
 }

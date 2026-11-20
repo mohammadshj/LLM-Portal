@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Account, Conversation, LanguageModel, ModelUsage
+from .permissions import IsPortalAdmin, is_portal_admin
 from .serializers import (
     ConversationSerializer,
     MessageSerializer,
@@ -67,7 +68,7 @@ def me(request):
     return Response(
         {
             "username": request.user.username,
-            "is_staff": request.user.is_staff,
+            "is_staff": is_portal_admin(request.user),
             "token_limit": account.token_limit,
             "tokens_used": account.tokens_used,
         }
@@ -166,7 +167,7 @@ def conversation_detail(request, pk):
 
 
 @api_view(["GET"])
-@permission_classes([permissions.IsAdminUser])
+@permission_classes([IsPortalAdmin])
 def usage(request):
     return Response(
         {

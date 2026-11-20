@@ -2,6 +2,8 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 
 from .thinking import CONTRACTS, LEVELS, POLICIES, validate_capabilities
 from .validators import validate_connection_url, validate_key_env
@@ -14,6 +16,12 @@ class Account(models.Model):
 
     def __str__(self):
         return self.user.username
+
+
+@receiver(post_save, sender=settings.AUTH_USER_MODEL)
+def create_user_account(sender, instance, created, raw, using, **kwargs):
+    if created and not raw:
+        Account.objects.using(using).get_or_create(user_id=instance.pk)
 
 
 class ModelConnection(models.Model):

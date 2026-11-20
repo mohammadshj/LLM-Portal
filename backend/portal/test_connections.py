@@ -276,7 +276,7 @@ class ConnectionTests(TestCase):
 
     def test_api_comparison_routing_partial_failure_and_no_connection_leak(self):
         user = get_user_model().objects.create_user("connections")
-        account = Account.objects.create(user=user)
+        account = Account.objects.get(user=user)
         chat = Conversation.objects.create(user=user, title="comparison")
         client = APIClient()
         client.force_authenticate(user)

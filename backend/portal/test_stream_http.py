@@ -152,6 +152,49 @@ class StreamHTTPTests(TransactionTestCase):
             )
         self.assertFalse(Message.objects.exists())
 
+    async def test_admin_deactivation_stops_stream_even_after_immediate_reactivation(
+        self,
+    ):
+        chat = self.chats[0]
+        closed = asyncio.Event()
+
+        async def provider(model, messages):
+            try:
+                yield ProviderEvent("usage", input_tokens=8, output_tokens=3)
+                yield ProviderEvent("delta", text="بخش اول")
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+        def set_active(active):
+            data = {"username": self.user.username, "role": "user"}
+            if active:
+                data["is_active"] = "on"
+            return admin_client.post(
+                f"/admin/auth/user/{self.user.pk}/change/", data
+            ).status_code
+
+        admin_client = Client()
+        manager = await get_user_model().objects.acreate_superuser("manager")
+        await admin_client.aforce_login(manager)
+        with patch("portal.streaming.stream_complete", provider):
+            async with self.open_stream(chat, self.payload(chat)) as stream:
+                await stream.until("delta")
+                self.assertEqual(await sync_to_async(set_active)(False), 302)
+                self.assertEqual(
+                    (await sync_to_async(self.client.get)("/api/auth/me/")).status_code,
+                    403,
+                )
+                self.assertEqual(await sync_to_async(set_active)(True), 302)
+                await asyncio.wait_for(closed.wait(), 5)
+                await stream.until("done")
+        reply = await Message.objects.aget(conversation=chat, role="assistant")
+        self.assertEqual(
+            (reply.status, reply.content, reply.total_tokens, reply.reserved_tokens),
+            ("cancelled", "بخش اول", 11, 0),
+        )
+        self.assertEqual((await Account.objects.aget(user=self.user)).tokens_used, 11)
+
     async def test_three_active_chats_stop_one_idle_provider(self):
         gates = {chat.title: asyncio.Event() for chat in self.chats}
         closed = {chat.title: asyncio.Event() for chat in self.chats}

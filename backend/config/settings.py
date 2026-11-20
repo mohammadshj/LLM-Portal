@@ -13,7 +13,7 @@ CSRF_TRUSTED_ORIGINS = [
     v for v in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",") if v
 ]
 INSTALLED_APPS = [
-    "django.contrib.admin",
+    "config.apps.PortalAdminConfig",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",

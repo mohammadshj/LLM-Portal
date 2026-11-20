@@ -54,7 +54,7 @@ class PortalTests(TestCase):
         )
         self.client = APIClient()
         self.client.force_authenticate(self.user)
-        self.account = Account.objects.create(user=self.user)
+        self.account = Account.objects.get(user=self.user)
         self.a = LanguageModel.objects.create(
             name="A", model_id="a", provider="demo", max_output_tokens=2048
         )
@@ -149,6 +149,9 @@ class PortalTests(TestCase):
         self.assertEqual(self.client.get("/api/usage/").status_code, 403)
         self.user.is_staff = True
         self.user.save()
+        self.assertEqual(self.client.get("/api/usage/").status_code, 403)
+        self.user.is_superuser = True
+        self.user.save()
         self.assertEqual(self.client.get("/api/usage/").status_code, 200)
 
     def test_login_and_logout_enforce_csrf(self):
@@ -188,7 +191,9 @@ class ConcurrentQuotaTests(TransactionTestCase):
     @skipUnlessDBFeature("has_select_for_update")
     def test_parallel_requests_cannot_spend_same_quota(self):
         user = get_user_model().objects.create_user("parallel")
-        account = Account.objects.create(user=user, token_limit=2120)
+        account = user.account
+        account.token_limit = 2120
+        account.save(update_fields=["token_limit"])
         model = LanguageModel.objects.create(
             name="mock", model_id="mock", provider="demo", max_output_tokens=2048
         )

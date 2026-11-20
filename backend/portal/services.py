@@ -6,11 +6,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as ConfigurationError
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from .models import Account, Conversation, LanguageModel, Message, ModelUsage
 from .thinking import validate_capabilities
@@ -110,6 +111,7 @@ def should_cancel(turn_id):
         pk=turn_id,
         status="running",
         cancel_requested=False,
+        conversation__user__is_active=True,
         lease_until__gt=now,
         created_at__gt=now - TURN_DEADLINE,
     )
@@ -225,6 +227,8 @@ def reserve_turn(
         raise ValidationError("یک تا سه مدل متفاوت انتخاب کنید.")
     with transaction.atomic():
         account = _locked_account(user.pk)
+        if not get_user_model().objects.filter(pk=user.pk, is_active=True).exists():
+            raise PermissionDenied("این حساب غیرفعال است.")
         _expire_locked(user.pk, timezone.now())
         chat = (
             Conversation.objects.select_for_update()

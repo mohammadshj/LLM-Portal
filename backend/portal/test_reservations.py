@@ -9,7 +9,7 @@ from django.test import TransactionTestCase, skipUnlessDBFeature
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from .models import Account, Conversation, LanguageModel, Message, ModelUsage
+from .models import Conversation, LanguageModel, Message, ModelUsage
 from .services import (
     RequestConflict,
     finish_reply,
@@ -21,7 +21,9 @@ from .services import (
 class ReservationTests(TransactionTestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("reservation")
-        self.account = Account.objects.create(user=self.user, token_limit=500)
+        self.account = self.user.account
+        self.account.token_limit = 500
+        self.account.save(update_fields=["token_limit"])
         self.model = LanguageModel.objects.create(
             name="Model", provider="demo", model_id="m", max_output_tokens=100
         )

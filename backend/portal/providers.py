@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -12,8 +13,15 @@ import httpx
 from django.conf import settings
 from django.core.exceptions import ValidationError
 
+from .thinking import parameters
+from .tokens import parse_usage
+
 logger = logging.getLogger(__name__)
 MAX_EVENT_CHARS = 2 * 1024 * 1024
+
+
+MAX_JSON_BYTES = 8 * 1024 * 1024
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
 class ProviderError(Exception):
@@ -32,6 +40,8 @@ class ProviderEvent:
     text: str = ""
     input_tokens: int | None = None
     output_tokens: int | None = None
+    total_tokens: int | None = None
+    reasoning_tokens: int | None = None
 
 
 def _log(model, code, status, started, *, warning=True):
@@ -83,7 +93,7 @@ def _timeout():
     )
 
 
-def _target(model, messages):
+def _target(model, messages, level=None):
     if model.provider != "openai":
         raise ProviderError("نوع ارتباط این مدل پشتیبانی نمی‌شود.", code="configuration")
     connection = model.connection
@@ -97,7 +107,7 @@ def _target(model, messages):
         raise ProviderError(
             "تنظیمات اتصال سرویس مدل معتبر نیست.", code="configuration"
         ) from None
-    headers = {}
+    headers = {"Accept-Encoding": "identity"}
     if connection.api_key_env:
         key = os.environ.get(connection.api_key_env, "").strip()
         if not key:
@@ -111,7 +121,8 @@ def _target(model, messages):
         {
             "model": model.model_id,
             "messages": messages,
-            "max_tokens": model.max_output_tokens,
+            **parameters(model.thinking_contract, level or model.thinking_default),
+            model.output_parameter: model.max_output_tokens,
         },
     )
 
@@ -136,37 +147,30 @@ def _check_http(status):
     raise ProviderError(f"{message} (HTTP {status})", code=f"http_{status}")
 
 
-def _usage(data):
-    """Use only verifiable counts, including DeepSeek cached/reasoning tokens already in totals."""
-    if not isinstance(data, dict):
-        return None
-    first = data.get("prompt_tokens", data.get("input_tokens"))
-    last = data.get("completion_tokens", data.get("output_tokens"))
-    total = data.get("total_tokens")
-
-    def valid(value):
-        return type(value) is int and 0 <= value <= 2147483647
-
-    # Some endpoints report total and only one side. Never add cache/reasoning
-    # subcounts or invent an input/output split from a total alone.
-    if valid(total) and valid(first) and last is None:
-        last = total - first
-    elif valid(total) and valid(last) and first is None:
-        first = total - last
-    if valid(first) and valid(last):
-        return first, last
-    return None
+def _usage_event(data, details):
+    counts = parse_usage(data)
+    if counts is not None:
+        details["usage"] = counts
+        return ProviderEvent(
+            "usage",
+            input_tokens=counts.incoming,
+            output_tokens=counts.outgoing,
+            total_tokens=counts.total,
+            reasoning_tokens=counts.reasoning,
+        )
 
 
-def _check_envelope(data):
+def _envelope_usage(data, details):
     if not isinstance(data, dict):
         raise ProviderError(
             "ساختار پاسخ سرویس مدل معتبر نیست.", code="invalid_envelope"
         )
+    event = _usage_event(data.get("usage"), details)
     if data.get("error"):
         raise ProviderError(
             "سرویس مدل هنگام تولید پاسخ خطا گزارش کرد.", code="upstream_error"
         )
+    return event
 
 
 def _choice(data):
@@ -210,6 +214,14 @@ def _check_answer(visible, reasoning, finish):
         raise ProviderError(
             "سرویس مدل پاسخ را طبق سیاست محتوای خود متوقف کرد.", code="filtered"
         )
+    if finish in ("tool_calls", "function_call"):
+        raise ProviderError(
+            "این گفتگو از فراخوانی ابزار پشتیبانی نمی‌کند.", code="unsupported_tool"
+        )
+    if visible and finish == "length":
+        raise ProviderError(
+            "پاسخ با رسیدن به سقف توکن ناتمام ماند.", code="output_limit"
+        )
     if not visible:
         if finish == "length":
             raise ProviderError(
@@ -226,19 +238,31 @@ def _check_answer(visible, reasoning, finish):
         )
 
 
-def _parse_result(data, details):
-    _check_envelope(data)
-    usage = _usage(data.get("usage"))
-    details["usage"] = usage
+def _reasoning(message):
+    value = message.get("reasoning_content")
+    if value is not None and not isinstance(value, str):
+        raise ProviderError("قالب استدلال سرویس معتبر نیست.", code="invalid_reasoning")
+    if message.get("tool_calls") or message.get("function_call"):
+        raise ProviderError(
+            "این گفتگو از فراخوانی ابزار پشتیبانی نمی‌کند.", code="unsupported_tool"
+        )
+    return value
+
+
+def _json_events(data, details, expose):
+    usage = _envelope_usage(data, details)
+    if usage:
+        yield usage
     choice = _choice(data)
     message = choice.get("message")
     text = _text(message)
-    _check_answer(
-        text.strip(),
-        bool(message.get("reasoning_content")),
-        choice.get("finish_reason"),
-    )
-    return text, *(usage or (None, None))
+    reasoning = _reasoning(message)
+    if reasoning is not None and expose:
+        yield ProviderEvent("reasoning_delta", text=reasoning)
+    if text:
+        yield ProviderEvent("delta", text=text)
+    _check_answer(text.strip(), bool(reasoning), choice.get("finish_reason"))
+    yield ProviderEvent("done")
 
 
 def _demo(model, messages):
@@ -255,30 +279,88 @@ def complete(model, messages):
     with _diagnostics(model) as details:
         url, headers, payload = _target(model, messages)
         with httpx.Client(timeout=_timeout(), follow_redirects=False) as client:
-            response = client.post(url, headers=headers, json=payload)
-            details["status"] = response.status_code
-            _check_http(response.status_code)
-            return _parse_result(response.json(), details)
+            with client.stream("POST", url, headers=headers, json=payload) as response:
+                details["status"] = response.status_code
+                _check_http(response.status_code)
+                _check_encoding(response)
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    _append_json(body, chunk)
+            events = list(_json_events(json.loads(body), details, expose=False))
+            text = next(event.text for event in events if event.kind == "delta")
+            counts = details["usage"]
+            return (
+                text,
+                counts.incoming if counts else None,
+                counts.outgoing if counts else None,
+            )
+
+
+def _too_large():
+    return ProviderError("حجم پاسخ سرویس از حد مجاز گذشت.", code="response_limit")
+
+
+def _check_encoding(response):
+    if response.headers.get("content-encoding", "identity").lower() != "identity":
+        raise ProviderError(
+            "سرویس قالب انتقال درخواست‌شده را رعایت نکرد.", code="unsupported_encoding"
+        )
+
+
+def _append_json(body, chunk):
+    if len(body) + len(chunk) > MAX_JSON_BYTES:
+        raise _too_large()
+    body.extend(chunk)
+
+
+async def _bounded_bytes(response):
+    _check_encoding(response)
+    size = 0
+    async for chunk in response.aiter_bytes():
+        size += len(chunk)
+        if size > MAX_RESPONSE_BYTES:
+            raise _too_large()
+        yield chunk
+
+
+async def _lines(response):
+    # Split across TCP and UTF-8 boundaries without buffering an unbounded line.
+    partial = bytearray()
+    trailing_cr = False
+    async for chunk in _bounded_bytes(response):
+        if not chunk:
+            continue
+        if trailing_cr and chunk.startswith(b"\n"):
+            chunk = chunk[1:]
+        trailing_cr = chunk.endswith(b"\r")
+        start = 0
+        for separator in re.finditer(rb"\r\n|\r|\n", chunk):
+            if len(partial) + separator.start() - start > MAX_EVENT_CHARS:
+                raise _too_large()
+            partial.extend(chunk[start : separator.start()])
+            yield partial.decode()
+            partial.clear()
+            start = separator.end()
+        if len(partial) + len(chunk) - start > MAX_EVENT_CHARS:
+            raise _too_large()
+        partial.extend(chunk[start:])
+    if partial:
+        yield partial.decode()
 
 
 async def _sse_data(response):
-    """Join SSE data lines until the blank line delimiter. Ignore heartbeat comments."""
     lines = []
     size = 0
-    async for line in response.aiter_lines():
-        if line == "":
-            if lines:
-                yield "\n".join(lines)
-                lines = []
-                size = 0
+    async for line in _lines(response):
+        if line == "" and lines:
+            yield "\n".join(lines)
+            lines = []
+            size = 0
         elif line.startswith("data:") or line == "data":
             value = line.partition(":")[2].removeprefix(" ")
             size += len(value) + 1
             if size > MAX_EVENT_CHARS:
-                raise ProviderError(
-                    "اندازهٔ بخش دریافتی از سرویس مدل بیش از حد است.",
-                    code="invalid_chunk",
-                )
+                raise _too_large()
             lines.append(value)
     if lines:
         raise ProviderError(
@@ -286,7 +368,7 @@ async def _sse_data(response):
         )
 
 
-async def _stream_chunks(response, details):
+async def _stream_chunks(response, details, expose):
     visible = reasoning = False
     finish = None
     ended = False
@@ -295,11 +377,9 @@ async def _stream_chunks(response, details):
             ended = True
             break
         data = json.loads(raw)
-        _check_envelope(data)
-        usage = _usage(data.get("usage"))
+        usage = _envelope_usage(data, details)
         if usage is not None:
-            details["usage"] = usage
-            yield ProviderEvent("usage", input_tokens=usage[0], output_tokens=usage[1])
+            yield usage
         # A terminal usage-only event legitimately has no choices.
         if data.get("choices") == [] and isinstance(data.get("usage"), dict):
             continue
@@ -308,7 +388,10 @@ async def _stream_chunks(response, details):
         if delta is None and choice.get("finish_reason") is not None:
             delta = {}
         text = _text(delta)
-        reasoning |= bool(delta.get("reasoning_content"))
+        part = _reasoning(delta)
+        reasoning |= bool(part)
+        if expose and part is not None:
+            yield ProviderEvent("reasoning_delta", text=part)
         if text:
             visible |= bool(text.strip())
             yield ProviderEvent("delta", text=text)
@@ -322,7 +405,7 @@ async def _stream_chunks(response, details):
     yield ProviderEvent("done")
 
 
-async def stream_complete(model, messages):
+async def stream_complete(model, messages, level=None):
     """Yield visible deltas as bytes arrive. One POST per model; closing releases the HTTP socket."""
     if model.provider == "demo":
         text, incoming, outgoing = _demo(model, messages)
@@ -332,9 +415,15 @@ async def stream_complete(model, messages):
         return
 
     with _diagnostics(model) as details:
-        url, headers, payload = _target(model, messages)
+        url, headers, payload = _target(model, messages, level)
+        expose = (
+            model.reasoning_policy != "hidden"
+            and (level or model.thinking_default) != "off"
+        )
         if model.connection.streaming_enabled:
-            payload.update(stream=True, stream_options={"include_usage": True})
+            payload["stream"] = True
+            if model.stream_usage_option:
+                payload["stream_options"] = {"include_usage": True}
         async with asyncio.timeout(settings.LLM_TOTAL_TIMEOUT):
             async with httpx.AsyncClient(
                 timeout=_timeout(), follow_redirects=False
@@ -351,18 +440,13 @@ async def stream_complete(model, messages):
                         .lower()
                     )
                     if mime == "text/event-stream":
-                        async for event in _stream_chunks(response, details):
+                        async for event in _stream_chunks(response, details, expose):
                             yield event
                     else:
                         # Some compatible gateways ignore stream=true and return one JSON object.
                         # For providers that reject stream, an operator can disable it per connection.
-                        await response.aread()
-                        text, incoming, outgoing = _parse_result(
-                            response.json(), details
-                        )
-                        if incoming is not None:
-                            yield ProviderEvent(
-                                "usage", input_tokens=incoming, output_tokens=outgoing
-                            )
-                        yield ProviderEvent("delta", text=text)
-                        yield ProviderEvent("done")
+                        body = bytearray()
+                        async for chunk in _bounded_bytes(response):
+                            _append_json(body, chunk)
+                        for event in _json_events(json.loads(body), details, expose):
+                            yield event

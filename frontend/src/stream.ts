@@ -1,9 +1,11 @@
+import type { Message } from "./types";
 import { request } from "./api";
 
 export type ChatEvent = {
   type:
     | "start"
     | "model_start"
+    | "reasoning_delta"
     | "delta"
     | "model_done"
     | "model_error"
@@ -14,12 +16,25 @@ export type ChatEvent = {
   model_id?: number;
   text?: string;
   detail?: string;
+  usage?: Pick<
+    Message,
+    | "input_tokens"
+    | "output_tokens"
+    | "reasoning_tokens"
+    | "total_tokens"
+    | "usage_source"
+  >;
   status?: string;
 };
 
 export async function streamChat(
   conversation: number,
-  body: { content: string; model_ids: number[]; request_id: string },
+  body: {
+    content: string;
+    model_ids: number[];
+    thinking: Record<number, string>;
+    request_id: string;
+  },
   signal: AbortSignal,
   receive: (event: ChatEvent) => void,
 ) {

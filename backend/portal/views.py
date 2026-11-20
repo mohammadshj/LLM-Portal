@@ -174,8 +174,10 @@ def usage(request):
                 Account.objects.values("user__username", "token_limit", "tokens_used")
             ),
             "models": list(
-                ModelUsage.objects.values("model__name").annotate(
-                    input_tokens=Sum("input_tokens"), output_tokens=Sum("output_tokens")
+                ModelUsage.objects.values("model_id", "model__name").annotate(
+                    input_tokens=Sum("input_tokens"),
+                    output_tokens=Sum("output_tokens"),
+                    unsplit_tokens=Sum("unsplit_tokens"),
                 )
             ),
         }

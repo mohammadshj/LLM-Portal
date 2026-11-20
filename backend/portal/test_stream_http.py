@@ -13,7 +13,7 @@ from django.contrib.auth import get_user_model
 from django.core.asgi import get_asgi_application
 from django.test import Client, TransactionTestCase
 
-from .models import Conversation, LanguageModel, Message
+from .models import Account, Conversation, LanguageModel, Message, ModelConnection
 from .providers import ProviderError, ProviderEvent
 
 
@@ -268,6 +268,52 @@ class StreamHTTPTests(TransactionTestCase):
         self.assertEqual(
             (row.status, row.content, row.reserved_tokens),
             ("cancelled", "متن اولیه", 0),
+        )
+
+    async def test_disconnect_during_reasoning_persists_partial_without_inventing_usage(
+        self,
+    ):
+        chat, model = self.chats[0], self.models[0]
+        model.connection = await ModelConnection.objects.acreate(
+            name="reason", base_url="https://reason.example/v1", api_key_env=""
+        )
+        model.provider = "openai"
+        model.thinking_contract = "always"
+        model.thinking_levels = ["on"]
+        model.thinking_default = "on"
+        model.reasoning_policy = "store"
+        await model.asave()
+        closed = asyncio.Event()
+
+        async def stalled(selected, messages, level):
+            self.assertEqual(level, "on")
+            try:
+                yield ProviderEvent("reasoning_delta", text="نیمه")
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+        with patch("portal.streaming.stream_complete", stalled):
+            async with self.open_stream(chat, self.payload(chat)) as stream:
+                self.assertEqual(
+                    (await stream.until("reasoning_delta"))["text"], "نیمه"
+                )
+            await asyncio.wait_for(closed.wait(), timeout=5)
+        reply = await Message.objects.aget(conversation=chat, role="assistant")
+        self.assertEqual(
+            (
+                reply.status,
+                reply.content,
+                reply.reasoning_content,
+                reply.reserved_tokens,
+            ),
+            ("cancelled", "", "نیمه", 0),
+        )
+        self.assertEqual(
+            (reply.usage_source, reply.reasoning_tokens), ("estimated", None)
+        )
+        self.assertEqual(
+            (await Account.objects.aget(user=self.user)).tokens_used, reply.total_tokens
         )
 
     async def test_three_models_stream_independently_into_one_turn(self):

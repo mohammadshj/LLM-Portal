@@ -98,6 +98,11 @@ class ConnectionTests(TestCase):
                 "model_id": "new-id",
                 "context_window": 8192,
                 "max_output_tokens": 512,
+                "thinking_contract": "none",
+                "output_parameter": "max_tokens",
+                "stream_usage_option": "on",
+                "framing_tokens": 32,
+                "reasoning_policy": "hidden",
                 "enabled": "on",
                 "_save": "Save",
             },
@@ -278,7 +283,15 @@ class ConnectionTests(TestCase):
         models = client.get("/api/models/").data
         self.assertEqual(
             set(models[0]),
-            {"id", "name", "provider", "context_window", "max_output_tokens"},
+            {
+                "id",
+                "name",
+                "provider",
+                "context_window",
+                "max_output_tokens",
+                "thinking_levels",
+                "thinking_default",
+            },
         )
 
         def handler(request):
@@ -392,6 +405,10 @@ class ConnectionMigrationTests(TransactionTestCase):
         self.assertEqual(
             (reply.parent_id, reply.input_tokens, reply.output_tokens),
             (prompt.pk, 5, 1),
+        )
+        self.assertEqual(
+            (reply.total_tokens, reply.reasoning_tokens, reply.reasoning_content),
+            (6, None, None),
         )
         current_user = get_user_model().objects.get(pk=user.pk)
         current_chat = Conversation.objects.get(pk=chat.pk)

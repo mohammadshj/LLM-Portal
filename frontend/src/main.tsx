@@ -271,7 +271,7 @@ function Workspace({
         </details>
         <div className="quota">
           <div>
-            <span>مصرف توکن</span>
+            <span>توکن کسرشده از سهمیه</span>
             <strong>{number(user.tokens_used)}</strong>
           </div>
           <progress
@@ -346,14 +346,20 @@ function Workspace({
                   <th>مدل</th>
                   <th>ورودی</th>
                   <th>خروجی</th>
+                  <th>جمع توکن‌ها</th>
                 </tr>
               </thead>
               <tbody>
                 {report.models.map((m) => (
-                  <tr key={m.model__name}>
+                  <tr key={m.model_id}>
                     <td>{m.model__name}</td>
                     <td>{number(m.input_tokens)}</td>
                     <td>{number(m.output_tokens)}</td>
+                    <td>
+                      {number(
+                        m.input_tokens + m.output_tokens + m.unsplit_tokens,
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -447,6 +453,28 @@ function Workspace({
                     </label>
                   ))}
                 </div>
+                {models
+                  .filter(
+                    (m) => selected.includes(m.id) && m.thinking_levels?.length,
+                  )
+                  .map((m) => (
+                    <label className="thinking-control" key={m.id}>
+                      شدت استدلال {m.name}
+                      <select
+                        value={chat.thinking?.[m.id] ?? m.thinking_default}
+                        disabled={processing}
+                        onChange={(e) =>
+                          chats.setThinking(m.id, e.target.value)
+                        }
+                      >
+                        {m.thinking_levels.map((level) => (
+                          <option key={level} value={level}>
+                            {level.toUpperCase()}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
                 {!models.length && (
                   <p>مدلی فعال نیست؛ با مدیر سامانه تماس بگیرید.</p>
                 )}

@@ -679,3 +679,8 @@ th {
 .reply-error, .retry { display: block; margin-top: 0.5rem; }
 .reply-error { color: var(--error-text); }
 .retry { font-size: 0.8rem; }
+.model-picker .thinking-control { display: inline-flex; align-items: center; gap: .5rem; margin: .35rem 0 .2rem .6rem; }
+.thinking-control select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: .4rem; padding: .2rem; }
+.reasoning { margin: .6rem 0; padding: .55rem .7rem; border-inline-start: 3px solid var(--border); background: var(--page); border-radius: .4rem; }
+.reasoning summary { cursor: pointer; color: var(--link); }
+.reasoning p { white-space: pre-wrap; overflow-wrap: anywhere; }

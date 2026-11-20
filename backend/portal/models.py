@@ -1,7 +1,9 @@
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
+from .thinking import CONTRACTS, LEVELS, POLICIES, validate_capabilities
 from .validators import validate_connection_url, validate_key_env
 
 
@@ -72,8 +74,43 @@ class LanguageModel(models.Model):
     max_output_tokens = models.PositiveIntegerField(default=512)
     enabled = models.BooleanField(default=True)
 
+    tokenizer_name = models.SlugField(
+        blank=True, help_text="نام فایل tokenizer.json محلی و تأییدشده، بدون پسوند"
+    )
+    output_parameter = models.CharField(
+        max_length=24,
+        default="max_tokens",
+        choices=[(p, p) for p in ("max_tokens", "max_completion_tokens")],
+    )
+    stream_usage_option = models.BooleanField(
+        default=True,
+        help_text="ارسال stream_options.include_usage در صورت پشتیبانی سرویس",
+    )
+    thinking_contract = models.CharField(
+        max_length=16, default="none", choices=[(c, c) for c in CONTRACTS]
+    )
+    thinking_levels = models.JSONField(default=list, blank=True)
+    thinking_default = models.CharField(
+        max_length=8, blank=True, choices=[(v, v) for v in LEVELS]
+    )
+    reasoning_policy = models.CharField(
+        max_length=12, choices=POLICIES, default="hidden"
+    )
+    provider_output_limit = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1)],
+        help_text="سقف خروجی مستند همین endpoint",
+    )
+    framing_tokens = models.PositiveIntegerField(
+        default=32,
+        validators=[MinValueValidator(32), MaxValueValidator(4096)],
+        help_text="حاشیهٔ تخمین بایتی برای هر پیام و کل درخواست",
+    )
+
     def clean(self):
         super().clean()
+        validate_capabilities(self)
         if self.provider == "openai" and not self.connection_id:
             raise ValidationError(
                 {"connection": "برای مدل واقعی یک اتصال سرویس انتخاب کنید."}
@@ -107,10 +144,15 @@ class Message(models.Model):
     model = models.ForeignKey(
         LanguageModel, null=True, blank=True, on_delete=models.PROTECT
     )
-    input_tokens = models.PositiveIntegerField(default=0)
-    output_tokens = models.PositiveIntegerField(default=0)
+    input_tokens = models.PositiveIntegerField(null=True, default=0)
+    output_tokens = models.PositiveIntegerField(null=True, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    thinking_level = models.CharField(max_length=8, blank=True)
+    reasoning_content = models.TextField(null=True)
+    reasoning_origin = models.CharField(max_length=64, blank=True)
+    reasoning_tokens = models.PositiveIntegerField(null=True)
+    total_tokens = models.PositiveBigIntegerField(null=True)
     # User rows are turns; each selected model gets a child row before dispatch.
     parent = models.ForeignKey(
         "self", null=True, on_delete=models.CASCADE, related_name="replies"
@@ -149,6 +191,9 @@ class ModelUsage(models.Model):
     model = models.ForeignKey(LanguageModel, on_delete=models.PROTECT)
     input_tokens = models.PositiveBigIntegerField(default=0)
     output_tokens = models.PositiveBigIntegerField(default=0)
+
+    # Part of reported totals whose input/output breakdown was unavailable.
+    unsplit_tokens = models.PositiveBigIntegerField(default=0)
 
     class Meta:
         constraints = [

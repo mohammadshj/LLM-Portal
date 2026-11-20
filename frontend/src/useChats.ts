@@ -8,6 +8,7 @@ type LiveTurn = { id: string; messages: Message[]; stopping: boolean };
 type Chat = {
   prompt: string;
   selection?: number[];
+  thinking?: Record<number, string>;
   detail?: Detail;
   live?: LiveTurn;
   error?: string;
@@ -49,17 +50,24 @@ function applyEvent(live: LiveTurn, event: ChatEvent): LiveTurn {
     messages: live.messages.map((m) => {
       if (m.model_id !== event.model_id) return m;
       switch (event.type) {
+        case "reasoning_delta":
+          return {
+            ...m,
+            reasoning_content: (m.reasoning_content ?? "") + (event.text ?? ""),
+          };
         case "delta":
           return { ...m, content: m.content + (event.text ?? "") };
         case "model_error":
           return {
             ...m,
+            ...event.usage,
             status: event.status === "cancelled" ? "cancelled" : "failed",
             error: event.detail,
           };
         case "model_done":
           return {
             ...m,
+            ...event.usage,
             status: event.status === "cancelled" ? "cancelled" : "completed",
           };
         default:
@@ -186,6 +194,12 @@ export function useChats(
       output_tokens: 0,
       usage_source: "none" as const,
     };
+    const thinking: Record<number, string> = {};
+    for (const model of selected) {
+      if (model.thinking_levels?.length)
+        thinking[model.id] =
+          state.thinking?.[model.id] ?? model.thinking_default;
+    }
     const messages: Message[] = [
       { ...common, id: -1, role: "user", content, model_name: null },
       ...selected.map((m) => ({
@@ -194,6 +208,7 @@ export function useChats(
         role: "assistant" as const,
         content: "",
         model_name: m.name,
+        thinking_level: thinking[m.id],
         model_id: m.id,
         status: "running" as const,
       })),
@@ -229,7 +244,12 @@ export function useChats(
       if (run.stopping) return;
       await streamChat(
         run.conversation,
-        { content, model_ids: selected.map((m) => m.id), request_id: run.id },
+        {
+          content,
+          model_ids: selected.map((m) => m.id),
+          thinking,
+          request_id: run.id,
+        },
         run.controller.signal,
         (event) => {
           if (event.type === "start") {
@@ -354,6 +374,11 @@ export function useChats(
     stop,
     remove,
     setPrompt: (prompt: string) => edit(activeId, (c) => ({ ...c, prompt })),
+    setThinking: (id: number, level: string) =>
+      edit(activeId, (c) => ({
+        ...c,
+        thinking: { ...c.thinking, [id]: level },
+      })),
     setSelection: (selection: number[]) =>
       edit(activeId, (c) => ({ ...c, selection })),
   };

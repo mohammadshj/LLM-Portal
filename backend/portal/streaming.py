@@ -5,12 +5,14 @@ import json
 import logging
 from contextlib import aclosing
 from dataclasses import dataclass, field
+from io import StringIO
 
 from asgiref.sync import async_to_sync, sync_to_async
 from django.http import StreamingHttpResponse
 
 from .providers import ProviderError, stream_complete
 from .services import finish_reply, reserve_turn, should_cancel
+from .tokens import Usage
 
 logger = logging.getLogger(__name__)
 POLL_SECONDS = 0.75
@@ -19,9 +21,12 @@ KEEPALIVE_SECONDS = 8
 
 @dataclass
 class Progress:
-    # Only visible assistant text and provider-reported usage enter accounting.
-    parts: list[str] = field(default_factory=list)
-    usage: tuple[int, int] | None = None
+    # Buffers are request-local. Live-only reasoning contributes a byte count.
+    answer: StringIO = field(default_factory=StringIO)
+    reasoning: StringIO | None = None
+    reasoning_bytes: int = 0
+    visible_bytes: int = 0
+    usage: Usage | None = None
 
 
 class TurnStream:
@@ -48,13 +53,43 @@ class TurnStream:
 
     async def read_provider(self, job, progress):
         # All reads and aclose() for one HTTP response run in the same task.
-        async with aclosing(stream_complete(job.model, job.messages)) as source:
+        stream = (
+            stream_complete(job.model, job.messages, job.thinking_level)
+            if job.thinking_level
+            else stream_complete(job.model, job.messages)
+        )
+        async with aclosing(stream) as source:
             async for event in source:
-                if event.kind == "delta":
-                    progress.parts.append(event.text)
-                    await self.emit(job, "delta", text=event.text)
+                if event.kind in ("delta", "reasoning_delta"):
+                    size = len(event.text.encode())
+                    if progress.visible_bytes + size > 4 * 1024 * 1024:
+                        raise ProviderError(
+                            "حجم متن مدل از حد مجاز گذشت.", code="text_limit"
+                        )
+                    progress.visible_bytes += size
+                    if event.kind == "delta":
+                        progress.answer.write(event.text)
+                    else:
+                        progress.reasoning_bytes += size
+                        if job.model.reasoning_policy in ("store", "preserve"):
+                            if progress.reasoning is None:
+                                progress.reasoning = StringIO()
+                            progress.reasoning.write(event.text)
+                    await self.emit(job, event.kind, text=event.text)
                 elif event.kind == "usage":
-                    progress.usage = (event.input_tokens, event.output_tokens)
+                    total = event.total_tokens
+                    if (
+                        total is None
+                        and event.input_tokens is not None
+                        and event.output_tokens is not None
+                    ):
+                        total = event.input_tokens + event.output_tokens
+                    progress.usage = Usage(
+                        event.input_tokens,
+                        event.output_tokens,
+                        total,
+                        event.reasoning_tokens,
+                    )
                 elif event.kind == "done":
                     return
         raise RuntimeError("provider iterator ended without done")
@@ -83,15 +118,28 @@ class TurnStream:
         status = await sync_to_async(finish_reply)(
             job.reply_id,
             status,
-            "".join(progress.parts),
+            progress.answer.getvalue(),
             progress.usage,
             error,
+            progress.reasoning.getvalue() if progress.reasoning is not None else None,
+            progress.reasoning_bytes,
         )
         await self.emit(
             job,
             "model_error" if status == "failed" else "model_done",
             status=status,
             detail=error,
+            usage=(
+                {
+                    "input_tokens": progress.usage.incoming,
+                    "output_tokens": progress.usage.outgoing,
+                    "reasoning_tokens": progress.usage.reasoning,
+                    "total_tokens": progress.usage.total,
+                    "usage_source": "reported",
+                }
+                if progress.usage and progress.usage.total is not None
+                else None
+            ),
         )
 
     async def watch_cancel(self, readers):
@@ -210,9 +258,13 @@ class EventStreamResponse(StreamingHttpResponse):
             super().close()
 
 
-def send_message(user, conversation, content, model_ids, request_id=None):
+def send_message(
+    user, conversation, content, model_ids, request_id=None, thinking=None
+):
     """Original JSON API, using the same cancellation, deadlines and accounting as SSE."""
-    turn, jobs = reserve_turn(user, conversation, content, model_ids, request_id)
+    turn, jobs = reserve_turn(
+        user, conversation, content, model_ids, request_id, thinking
+    )
     for job in jobs:
         if job.model.connection is not None:
             # Preserve the legacy upstream JSON contract on these request-local objects.

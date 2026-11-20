@@ -6,6 +6,12 @@ COPY backend/requirements.txt .
 RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi; \
     pip install --no-cache-dir -r requirements.txt
+ARG INSTALL_LOCAL_TOKENIZERS=0
+RUN --mount=type=secret,id=proxy_ca \
+    if [ "$INSTALL_LOCAL_TOKENIZERS" = "1" ]; then \
+      if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi; \
+      pip install --no-cache-dir tokenizers==0.22.2; \
+    fi
 RUN useradd --create-home portal && mkdir /app/staticfiles && chown portal:portal /app/staticfiles
 COPY --chown=portal:portal backend/ .
 RUN chmod -R a+rX /app

@@ -275,7 +275,7 @@ class ProviderTests(SimpleTestCase):
         for usage, expected in [
             (None, None),
             ({}, None),
-            ({"total_tokens": 7}, None),
+            ({"total_tokens": 7}, (None, None)),
             ({"prompt_tokens": 2, "total_tokens": 7}, (2, 5)),
             ({"prompt_tokens": True, "completion_tokens": 1}, None),
             ({"prompt_tokens": -2, "completion_tokens": 1}, None),
@@ -325,7 +325,10 @@ class ProviderTests(SimpleTestCase):
             self.assertEqual(caught.exception.code, code)
             self.assertEqual(caught.exception.status, 200)
             if code == "output_limit":
-                self.assertEqual(caught.exception.usage, (5, 30))
+                self.assertEqual(
+                    (caught.exception.usage.incoming, caught.exception.usage.outgoing),
+                    (5, 30),
+                )
 
     async def test_incomplete_stream_retains_delivered_text_with_error_not_done(self):
         contents = sse({"choices": [{"delta": {"content": "partial"}}]})

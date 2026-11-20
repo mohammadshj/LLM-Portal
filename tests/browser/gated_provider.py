@@ -39,7 +39,9 @@ class Provider(BaseHTTPRequestHandler):
         chat = request["messages"][-1]["content"]
         model = request["model"]
         task = f"{chat}/{model}"
-        notify(event="started", task=task)
+        effort = request.get("reasoning_effort")
+        off = request.get("thinking") == {"type": "disabled"}
+        notify(event="started", task=task, level="off" if off else effort)
         if model == "failure":
             # Delay the HTTP error so a successful sibling visibly streams first.
             with condition:
@@ -49,6 +51,14 @@ class Provider(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         try:
+            if not off:
+                for part in ("TRACE[", task + "]"):
+                    self.event({"choices": [{"delta": {"reasoning_content": part}}]})
+                if model == "fast":
+                    with condition:
+                        condition.wait_for(
+                            lambda: task + "/answer" in gates, timeout=20
+                        )
             self.event(
                 {
                     "choices": [
@@ -87,6 +97,9 @@ class Provider(BaseHTTPRequestHandler):
                         "prompt_tokens": 7,
                         "completion_tokens": 13,
                         "total_tokens": 20,
+                        "completion_tokens_details": {
+                            "reasoning_tokens": 0 if off else 6
+                        },
                     },
                 }
             )

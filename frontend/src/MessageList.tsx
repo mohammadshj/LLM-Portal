@@ -1,4 +1,24 @@
+import { useState } from "react";
 import type { Message } from "./types";
+
+const count = (value?: number | null) =>
+  value == null ? "نامعلوم" : value.toLocaleString("fa-IR");
+
+function usageLabel(m: Message, field: "in" | "out" | "total") {
+  const value =
+    field === "in"
+      ? m.input_tokens
+      : field === "out"
+        ? m.output_tokens
+        : m.total_tokens;
+  if (value == null) return "";
+  const estimate =
+    m.usage_source === "estimated" ||
+    m.usage_source === "estimate_" + field ||
+    (field === "total" &&
+      (m.usage_source === "estimate_in" || m.usage_source === "estimate_out"));
+  return estimate ? "(تخمینی)" : "(گزارش سرویس)";
+}
 
 const statusText = {
   running: "در حال دریافت…",
@@ -7,6 +27,23 @@ const statusText = {
   failed: "ناموفق",
   cancelled: "متوقف شد",
 };
+
+function Reasoning({ message }: { message: Message }) {
+  const [open, setOpen] = useState(message.status === "running");
+  return (
+    <details
+      className="reasoning"
+      open={open}
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+    >
+      <summary>
+        فرایند استدلال مدل{" "}
+        {message.status === "running" && !message.content && "· در حال دریافت"}
+      </summary>
+      <p dir="auto">{message.reasoning_content}</p>
+    </details>
+  );
+}
 
 export function MessageList({
   messages,
@@ -47,7 +84,16 @@ export function MessageList({
                     data-status={m.status}
                   >
                     <div className="message-label">{m.model_name}</div>
-                    <p dir="auto">{m.content}</p>
+                    {m.thinking_level && (
+                      <small>Thinking · {m.thinking_level.toUpperCase()}</small>
+                    )}
+                    {m.reasoning_content && <Reasoning message={m} />}
+                    {m.reasoning_content && m.content && (
+                      <strong>پاسخ نهایی</strong>
+                    )}
+                    <p className="final-answer" dir="auto">
+                      {m.content}
+                    </p>
                     {m.status && m.status !== "completed" && (
                       <small role="status">{statusText[m.status]} </small>
                     )}
@@ -59,9 +105,17 @@ export function MessageList({
                     ) : (
                       m.usage_source !== "none" && (
                         <small>
-                          {m.usage_source === "estimated" ? "تخمینی · " : ""}
-                          {m.input_tokens?.toLocaleString("fa-IR")} ورودی ·{" "}
-                          {m.output_tokens?.toLocaleString("fa-IR")} خروجی
+                          ورودی {count(m.input_tokens)} {usageLabel(m, "in")} ·
+                          خروجی {count(m.output_tokens)} {usageLabel(m, "out")}{" "}
+                          · مجموع {count(m.total_tokens)}{" "}
+                          {usageLabel(m, "total")}
+                          {m.thinking_level || m.reasoning_tokens != null
+                            ? " · سهم استدلال " +
+                              count(m.reasoning_tokens) +
+                              (m.reasoning_tokens != null
+                                ? " (گزارش سرویس)"
+                                : "")
+                            : ""}
                         </small>
                       )
                     )}

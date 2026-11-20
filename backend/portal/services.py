@@ -1,16 +1,20 @@
 """Reserve, call and settle are separate operations. No provider I/O inside atomic()."""
 
+import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 
+from django.core.exceptions import ValidationError as ConfigurationError
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from .models import Account, Conversation, LanguageModel, Message, ModelUsage
+from .thinking import validate_capabilities
+from .tokens import Usage, input_counter
 
 log = logging.getLogger(__name__)
 LEASE = timedelta(seconds=120)
@@ -27,6 +31,7 @@ class Job:
     reply_id: int
     model: LanguageModel
     messages: list
+    thinking_level: str = ""
 
 
 def _locked_account(user_id):
@@ -73,6 +78,8 @@ def _expire_locked(user_id, now):
             error=EXPIRED,
             reserved_tokens=0,
             usage_source="unknown",
+            input_tokens=None,
+            output_tokens=None,
         )
         _close_turn_if_done(turn)
         log.warning("llm_reservation_expired turn_id=%s", turn.pk)
@@ -141,42 +148,79 @@ def delete_conversation(user, conversation):
         chat.delete()
 
 
-def _admission_plan(chat, models, content):
-    # A model gets only question/answer pairs it actually completed. This
-    # excludes orphan legacy questions, failed branches and stopped partials.
-    prior = (
-        chat.messages.filter(
-            role="assistant",
-            status="completed",
-            model_id__in=[m.pk for m in models],
-            parent__isnull=False,
-        )
-        .order_by("id")
-        .values_list("model_id", "parent__content", "content")
-    )
-    histories = {model.pk: [] for model in models}
-    for model_id, question, answer in prior:
-        histories[model_id].extend(
-            [
-                {"role": "user", "content": question},
-                {"role": "assistant", "content": answer},
-            ]
-        )
+def _origin(model):
+    # Bind preserved reasoning to the exact configured service and upstream model.
+    if model.reasoning_policy != "preserve":
+        return ""
+    target = (model.connection_id, model.connection.base_url, model.model_id)
+    return hashlib.sha256(repr(target).encode()).hexdigest()
+
+
+def _admission_plan(chat, models, content, thinking):
     plans = []
     for model in models:
-        messages = histories[model.pk]
+        try:
+            validate_capabilities(model)
+        except ConfigurationError:
+            raise ValidationError(
+                "تنظیمات Thinking یا سقف خروجی مدل معتبر نیست."
+            ) from None
+        key = str(model.pk)
+        level = thinking.get(key, model.thinking_default)
+        if key in thinking and level not in model.thinking_levels:
+            raise ValidationError("سطح Thinking انتخاب‌شده برای این مدل مجاز نیست.")
+        if model.reasoning_policy == "preserve" and model.connection is None:
+            raise ValidationError("تنظیمات اتصال مدل کامل نیست.")
+        origin = _origin(model)
+        count = input_counter(model.tokenizer_name)
+        messages = []
+        bound = model.framing_tokens
+        available = model.context_window - model.max_output_tokens
+        prior = chat.messages.filter(
+            role="assistant", status="completed", model=model, parent__isnull=False
+        ).order_by("id")
+        fields = ["parent__content", "content"]
+        if origin:
+            fields += ["reasoning_origin", "reasoning_content"]
+        for question, answer, *preserved in prior.values_list(*fields).iterator(
+            chunk_size=16
+        ):
+            assistant = {"role": "assistant", "content": answer}
+            if origin:
+                if preserved[0] != origin:
+                    raise ValidationError(
+                        "برای حفظ تاریخچهٔ کامل استدلال این مدل، گفتگوی تازه بسازید."
+                    )
+                if preserved[1] is not None:
+                    assistant["reasoning_content"] = preserved[1]
+            messages.extend([{"role": "user", "content": question}, assistant])
+            bound += (
+                2 * model.framing_tokens
+                + count(question)
+                + count(answer)
+                + count(assistant.get("reasoning_content", ""))
+            )
+            if bound > available:
+                raise ValidationError(
+                    "ظرفیت تاریخچهٔ مدل تکمیل شده است؛ گفتگوی تازه بسازید."
+                )
         messages.append({"role": "user", "content": content})
-        bound = sum(len(m["content"].encode()) + 32 for m in messages) + 32
+        bound += count(content) + model.framing_tokens
         hold = bound + model.max_output_tokens
         if hold > model.context_window or model.max_output_tokens < 1:
             raise ValidationError(
                 "ظرفیت گفتگو برای مدل انتخابی کافی نیست؛ گفتگوی تازه بسازید."
             )
-        plans.append((model, messages, bound, hold))
+        plans.append((model, messages, bound, hold, level, origin))
     return plans
 
 
-def reserve_turn(user, conversation, content, model_ids, request_id=None):
+def reserve_turn(
+    user, conversation, content, model_ids, request_id=None, thinking=None
+):
+    thinking = {} if thinking is None else thinking
+    if not isinstance(thinking, dict) or set(thinking) - {str(pk) for pk in model_ids}:
+        raise ValidationError("تنظیم Thinking فقط برای مدل‌های انتخاب‌شده مجاز است.")
     if not 1 <= len(model_ids) <= 3 or len(set(model_ids)) != len(model_ids):
         raise ValidationError("یک تا سه مدل متفاوت انتخاب کنید.")
     with transaction.atomic():
@@ -206,7 +250,7 @@ def reserve_turn(user, conversation, content, model_ids, request_id=None):
         )
         if len(models) != len(model_ids):
             raise ValidationError("یکی از مدل‌ها موجود یا فعال نیست.")
-        plans = _admission_plan(chat, models, content)
+        plans = _admission_plan(chat, models, content, thinking)
         open_holds = (
             Message.objects.filter(
                 conversation__user=user, role="assistant", status="running"
@@ -227,7 +271,7 @@ def reserve_turn(user, conversation, content, model_ids, request_id=None):
             lease_until=timezone.now() + LEASE,
         )
         jobs = []
-        for model, messages, bound, hold in plans:
+        for model, messages, bound, hold, level, origin in plans:
             reply = Message.objects.create(
                 conversation=chat,
                 role="assistant",
@@ -236,22 +280,41 @@ def reserve_turn(user, conversation, content, model_ids, request_id=None):
                 status="running",
                 input_bound=bound,
                 reserved_tokens=hold,
+                thinking_level=level,
+                reasoning_origin=origin,
             )
-            jobs.append(Job(reply.pk, model, messages))
+            jobs.append(Job(reply.pk, model, messages, level))
         return turn, jobs
 
 
-def _usage(reply, text, usage):
-    if usage and all(type(n) is int and n >= 0 for n in usage):
-        return *usage, "reported"
-    if not text:
-        return 0, 0, "unknown"
-    # Missing upstream usage: a visible estimate, bounded by the held budget.
-    output = min(reply.reserved_tokens - reply.input_bound, len(text.encode()))
-    return reply.input_bound, output, "estimated"
+def _usage(reply, text, reasoning_bytes, usage):
+    if isinstance(usage, tuple):
+        incoming, outgoing = usage
+        usage = Usage(incoming, outgoing, incoming + outgoing)
+    if usage is not None and usage.total is not None:
+        return usage, "reported"
+    if not text and not reasoning_bytes:
+        return (usage, "partial") if usage else (Usage(None, None, None), "unknown")
+    # When only one side was reported, estimate only the missing side.
+    usage = usage or Usage(None, None, None)
+    incoming = reply.input_bound if usage.incoming is None else usage.incoming
+    outgoing = usage.outgoing
+    source = "estimate_in"
+    if outgoing is None:
+        reasoning_estimate = (
+            reasoning_bytes if usage.reasoning is None else usage.reasoning
+        )
+        size = len(text.encode()) + reasoning_estimate
+        outgoing = max(
+            usage.reasoning or 0, min(reply.reserved_tokens - reply.input_bound, size)
+        )
+        source = "estimated" if usage.incoming is None else "estimate_out"
+    return Usage(incoming, outgoing, incoming + outgoing, usage.reasoning), source
 
 
-def finish_reply(reply_id, status, text="", usage=None, error=""):
+def finish_reply(
+    reply_id, status, text="", usage=None, error="", reasoning=None, reasoning_bytes=0
+):
     if status not in {"completed", "failed", "cancelled"}:
         raise ValueError("Invalid reply state")
     with transaction.atomic():
@@ -275,23 +338,37 @@ def finish_reply(reply_id, status, text="", usage=None, error=""):
             if not turn.cancel_requested:
                 turn.cancel_requested = True
                 turn.save(update_fields=["cancel_requested"])
-        incoming, outgoing, source = _usage(reply, text, usage)
-        if incoming + outgoing > reply.reserved_tokens:
+        counts, source = _usage(reply, text, reasoning_bytes, usage)
+        # With no total or visible text, only the reported lower bound is chargeable.
+        accounted = counts.total
+        if accounted is None:
+            accounted = (counts.incoming or 0) + (
+                counts.outgoing or counts.reasoning or 0
+            )
+        if accounted > reply.reserved_tokens:
             # Never underreport actual billable usage from a non-conforming service.
             log.warning("llm_reported_usage_exceeds_hold reply_id=%s", reply.pk)
-        if incoming or outgoing:
-            account.tokens_used += min(incoming + outgoing, reply.reserved_tokens)
+        if accounted:
+            account.tokens_used += min(accounted, reply.reserved_tokens)
             account.save(update_fields=["tokens_used"])
             ledger, _ = ModelUsage.objects.get_or_create(
                 user_id=user_id, model_id=reply.model_id
             )
-            ledger.input_tokens += incoming
-            ledger.output_tokens += outgoing
-            ledger.save(update_fields=["input_tokens", "output_tokens"])
+            ledger.input_tokens += counts.incoming or 0
+            ledger.output_tokens += counts.outgoing or 0
+            ledger.unsplit_tokens += (
+                accounted - (counts.incoming or 0) - (counts.outgoing or 0)
+            )
+            ledger.save(
+                update_fields=["input_tokens", "output_tokens", "unsplit_tokens"]
+            )
         reply.status = status
         reply.content = text
-        reply.input_tokens = incoming
-        reply.output_tokens = outgoing
+        reply.input_tokens = counts.incoming
+        reply.output_tokens = counts.outgoing
+        reply.total_tokens = counts.total
+        reply.reasoning_tokens = counts.reasoning
+        reply.reasoning_content = reasoning
         reply.usage_source = source
         reply.error = error[:240]
         reply.reserved_tokens = 0
@@ -302,6 +379,9 @@ def finish_reply(reply_id, status, text="", usage=None, error=""):
                 "input_tokens",
                 "output_tokens",
                 "usage_source",
+                "total_tokens",
+                "reasoning_tokens",
+                "reasoning_content",
                 "error",
                 "reserved_tokens",
             ]

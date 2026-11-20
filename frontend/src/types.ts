@@ -9,6 +9,8 @@ export type Model = {
   name: string;
   provider: string;
   context_window: number;
+  thinking_levels: string[];
+  thinking_default: string;
 };
 export type Conversation = { id: number; title: string };
 export type Message = {
@@ -21,9 +23,20 @@ export type Message = {
   model_id?: number | null;
   parent_id?: number | null;
   error?: string;
-  usage_source?: "reported" | "estimated" | "unknown" | "none";
-  input_tokens: number;
-  output_tokens: number;
+  reasoning_content?: string | null;
+  thinking_level?: string;
+  reasoning_tokens?: number | null;
+  total_tokens?: number | null;
+  usage_source?:
+    | "reported"
+    | "estimated"
+    | "partial"
+    | "estimate_in"
+    | "estimate_out"
+    | "unknown"
+    | "none";
+  input_tokens: number | null;
+  output_tokens: number | null;
 };
 export type Detail = Conversation & {
   active_request_id?: string | null;
@@ -38,8 +51,10 @@ export type Usage = {
     tokens_used: number;
   }[];
   models: {
+    model_id: number;
     model__name: string;
     input_tokens: number;
     output_tokens: number;
+    unsplit_tokens: number;
   }[];
 };

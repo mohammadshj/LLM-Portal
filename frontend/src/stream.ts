@@ -81,6 +81,15 @@ export async function streamChat(
         buffer = buffer.slice(boundary + 1);
       }
     }
+  } catch (error) {
+    if (
+      !signal.aborted &&
+      (error instanceof TypeError || error instanceof SyntaxError)
+    )
+      throw new Error(
+        "ارتباط با جریان پاسخ قطع شد. وضعیت گفتگو را دوباره بررسی کنید.",
+      );
+    throw error;
   } finally {
     await reader.cancel().catch(() => {});
     reader.releaseLock();

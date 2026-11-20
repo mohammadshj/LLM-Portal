@@ -77,9 +77,56 @@ class PortalTests(TestCase):
 
     def test_user_cannot_read_write_or_delete_another_conversation(self):
         self.client.force_authenticate(self.other)
-        for method in ["get", "post", "delete"]:
+        for method in ["get", "post", "patch", "delete"]:
             self.assertEqual(getattr(self.client, method)(self.url).status_code, 404)
         self.assertEqual(self.client.get("/api/conversations/").data["results"], [])
+
+    def test_rename_and_search_visible_history(self):
+        for title in ("", "  ", "x" * 101):
+            self.assertEqual(
+                self.client.patch(self.url, {"title": title}).status_code, 400
+            )
+        self.assertEqual(
+            self.client.patch(self.url, {"title": " طرح پژوهش "}).data["title"],
+            "طرح پژوهش",
+        )
+        Conversation.objects.create(user=self.other, title="پژوهش خصوصی")
+        old = Conversation.objects.create(user=self.user, title="پژوهش قدیمی")
+        Conversation.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=31)
+        )
+        result = self.client.get("/api/conversations/", {"q": "پژوهش"}).data
+        self.assertEqual(
+            [row["id"] for row in result["results"]], [self.conversation.pk]
+        )
+        self.assertFalse(
+            self.client.get("/api/conversations/", {"q": "test"}).data["results"]
+        )
+        self.assertEqual(
+            self.client.patch(
+                f"/api/conversations/{old.pk}/", {"title": "new"}
+            ).status_code,
+            404,
+        )
+        browser = APIClient(enforce_csrf_checks=True)
+        browser.force_login(self.user)
+        self.assertEqual(browser.patch(self.url, {"title": "blocked"}).status_code, 403)
+
+    def test_search_across_pages_and_show_processing(self):
+        Conversation.objects.bulk_create(
+            [Conversation(user=self.user, title=f"needle {i}") for i in range(51)]
+        )
+        hit = Conversation.objects.filter(title="needle 0").get()
+        Message.objects.create(
+            conversation=hit, role="user", content="pending", status="running"
+        )
+        result = self.client.get("/api/conversations/", {"q": "needle"}).data
+        self.assertEqual(result["count"], 51)
+        self.assertIn("q=needle", result["next"])
+        page = self.client.get("/api/conversations/", {"q": "needle", "page": 2}).data
+        self.assertEqual(
+            [(c["id"], c["is_processing"]) for c in page["results"]], [(hit.pk, True)]
+        )
 
     def test_comparison_records_usage_and_separate_histories(self):
         with mock_completion(return_value=("answer", 10, 20)) as provider:

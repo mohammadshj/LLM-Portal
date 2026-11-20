@@ -2,7 +2,7 @@ import json
 from datetime import timedelta
 
 from django.contrib.auth import authenticate, login, logout
-from django.db.models import Sum
+from django.db.models import Exists, OuterRef, Sum
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
 from django.shortcuts import get_object_or_404
@@ -15,7 +15,7 @@ from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Account, Conversation, LanguageModel, ModelUsage
+from .models import Account, Conversation, LanguageModel, Message, ModelUsage
 from .permissions import IsPortalAdmin, is_portal_admin
 from .serializers import (
     ConversationSerializer,
@@ -95,8 +95,17 @@ class Conversations(generics.ListCreateAPIView):
     serializer_class = ConversationSerializer
 
     def get_queryset(self):
-        return Conversation.objects.filter(
-            user=self.request.user, created_at__gte=timezone.now() - timedelta(days=30)
+        running = Message.objects.filter(
+            conversation_id=OuterRef("pk"), role="user", status="running"
+        )
+        return (
+            Conversation.objects.filter(
+                title__icontains=self.request.query_params.get("q", "").strip()[:100],
+                user=self.request.user,
+                created_at__gte=timezone.now() - timedelta(days=30),
+            )
+            .annotate(is_processing=Exists(running))
+            .order_by("-created_at", "-pk")
         )
 
     def perform_create(self, serializer):
@@ -135,9 +144,21 @@ def cancel_generation(request, pk, request_id):
     return Response({"status": "cancelling" if cancelling else "finished"})
 
 
-@api_view(["GET", "POST", "DELETE"])
+@api_view(["GET", "POST", "PATCH", "DELETE"])
 def conversation_detail(request, pk):
     conversation = owned_conversation(request, pk)
+    if request.method == "PATCH":
+        serializer = ConversationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        title = serializer.validated_data["title"]
+        # Update only the title, even if retention removed the row concurrently.
+        updated = Conversation.objects.filter(
+            pk=conversation.pk, user=request.user
+        ).update(title=title)
+        if not updated:
+            return Response(status=404)
+        conversation.title = title
+        return Response(ConversationSerializer(conversation).data)
     if request.method == "DELETE":
         delete_conversation(request.user, conversation)
         return Response(status=204)

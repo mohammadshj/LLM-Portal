@@ -70,6 +70,15 @@ class Provider(BaseHTTPRequestHandler):
                     ]
                 }
             )
+            if chat == "مطالعهٔ پاسخ طولانی":
+                with condition:
+                    condition.wait_for(lambda: task + "/body" in gates, timeout=20)
+                text = (
+                    "\n\n"
+                    + "\n\n".join(f"بند {i}" for i in range(70))
+                    + "\n\nبند پایانی\n\n```python\ndef live():"
+                )
+                self.event({"choices": [{"delta": {"content": text}}]})
             deadline = time.monotonic() + 60
             while not released(task) and time.monotonic() < deadline:
                 # The mock detects the backend's actual upstream socket close.
@@ -79,12 +88,28 @@ class Provider(BaseHTTPRequestHandler):
             if not released(task):
                 notify(event="timeout", task=task)
                 return
+            markdown = " return 1\n```" if chat == "مطالعهٔ پاسخ طولانی" else ""
+            if chat == "مقایسه Markdown":
+                markdown = (
+                    "\n\n## نتیجه\n\n**پررنگ** و *تأکید*\n\n> نقل قول\n\n"
+                    "1. مورد اول\n\n- مورد دوم\n\n---\n\n"
+                    "| الف | ب |\n|---|---|\n| ۱ | ۲ |\n\n"
+                    "```python\ndef hello(): return 1\n```\n\n"
+                    "[راهنما](https://example.org) [محلی](file:///example) "
+                    "<mark>متن</mark> ![تصویر](https://example.org/image)"
+                )
             self.event(
                 {
                     "choices": [
                         {
                             "index": 0,
-                            "delta": {"content": f"LAST[{task}]"},
+                            "delta": {
+                                "content": (
+                                    markdown + f"\n\nLAST[{task}]"
+                                    if chat == "مطالعهٔ پاسخ طولانی"
+                                    else f"LAST[{task}]" + markdown
+                                )
+                            },
                             "finish_reason": "stop",
                         }
                     ]

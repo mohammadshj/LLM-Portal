@@ -12,6 +12,7 @@ type Chat = {
   detail?: Detail;
   live?: LiveTurn;
   error?: string;
+  readError?: string;
   removing?: boolean;
   loading?: boolean;
 };
@@ -139,6 +140,7 @@ export function useChats(
       edit(id, (c) => ({
         ...c,
         detail,
+        readError: undefined,
         loading: false,
         live: detail.active_request_id === c.live?.id ? c.live : undefined,
       }));
@@ -152,7 +154,7 @@ export function useChats(
       }
     } catch (e) {
       if (!controller.signal.aborted)
-        edit(id, (c) => ({ ...c, loading: false, error: errorMessage(e) }));
+        edit(id, (c) => ({ ...c, loading: false, readError: errorMessage(e) }));
     } finally {
       if (reads.current.get(id) === controller) reads.current.delete(id);
     }
@@ -323,17 +325,15 @@ export function useChats(
     }
   }
 
-  async function remove() {
-    const id = activeId;
+  async function remove(id: number) {
     const chat = current.current[id];
     if (
-      !chat?.detail ||
+      id < 0 ||
       sends.current.has(id) ||
-      chat.detail.active_request_id ||
-      chat.removing ||
-      !confirm("این گفتگو حذف شود؟")
+      chat?.detail?.active_request_id ||
+      chat?.removing
     )
-      return;
+      throw new Error("پس از پایان پردازش گفتگو دوباره تلاش کنید.");
     invalidateRead(id);
     edit(id, (c) => ({ ...c, removing: true }));
     try {
@@ -345,13 +345,15 @@ export function useChats(
       setActiveId((old) => (old === id ? fresh : old));
       return id;
     } catch (e) {
-      edit(id, (c) => ({ ...c, removing: false, error: errorMessage(e) }));
+      edit(id, (c) => ({ ...c, removing: false }));
+      throw e;
     }
   }
 
   const chat = chats[activeId] ?? empty;
-  const busy = (id: number) =>
-    sends.current.has(id) || !!chats[id]?.detail?.active_request_id;
+  const busy = (id: number, listed = false) =>
+    sends.current.has(id) ||
+    (chats[id]?.detail ? !!chats[id]?.detail?.active_request_id : listed);
   // A reload can observe a turn still being settled. Poll that turn until the
   // server has persisted final messages, retaining any local partials meanwhile.
   const live = chat.live;
@@ -373,6 +375,15 @@ export function useChats(
     send,
     stop,
     remove,
+    renamed: (id: number, title: string) => {
+      if (!current.current[id]) return;
+      invalidateRead(id);
+      edit(id, (c) => ({
+        ...c,
+        detail: c.detail ? { ...c.detail, title } : undefined,
+      }));
+      void load(id);
+    },
     setPrompt: (prompt: string) => edit(activeId, (c) => ({ ...c, prompt })),
     setThinking: (id: number, level: string) =>
       edit(activeId, (c) => ({

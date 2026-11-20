@@ -8,3 +8,5 @@ NODE_PATH=/tmp/portal-browser/node_modules CHROMIUM_BIN=/usr/bin/chromium node t
 ```
 
 Set `PORTAL_TEST_URL` if the local frontend uses a port other than 8080. Compose commands run in the project root and honor `COMPOSE_PROJECT_NAME`, `COMPOSE_FILE` and the Docker CLI configuration. HTTP proxies in the test backend should bypass loopback.
+
+The workspace checks exercise one, two and three models, model search and thinking settings, keyboard submission, draft preparation after Stop, history search/rename/delete, safe Markdown and highlighted code copy. Chromium checks document overflow at 320, 390, 640, 768, 1024 and 1440 CSS pixels in both themes. A gated long response checks that reading older messages suspends auto-scroll. To capture test views, set `PORTAL_SCREENSHOTS` to an existing output directory outside the repository.

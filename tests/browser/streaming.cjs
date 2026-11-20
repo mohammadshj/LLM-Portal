@@ -121,9 +121,22 @@ async function run() {
     browser = await chromium.launch({
       executablePath: process.env.CHROMIUM_BIN || undefined,
     });
-    const page = await browser.newPage();
+    const page = await browser.newPage({
+      viewport: { width: 1440, height: 900 },
+      permissions: ["clipboard-read", "clipboard-write"],
+    });
     page.setDefaultTimeout(timeout);
     const errors = [];
+    page.on("console", (m) => {
+      if (
+        m.type() === "error" &&
+        !(
+          m.text().includes("403 (Forbidden)") &&
+          new URL(m.location().url || base).pathname === "/api/auth/me/"
+        )
+      )
+        errors.push(m.text());
+    });
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(base);
     await page.getByLabel("نام کاربری", { exact: true }).fill(user);
@@ -133,8 +146,26 @@ async function run() {
     const thread = page.locator(".thread");
     const cards = thread.locator(".message.assistant");
     const stop = page.getByRole("button", { name: stopLabel });
+    const capture = async (name) => {
+      if (process.env.PORTAL_SCREENSHOTS)
+        await page.screenshot({
+          path: path.join(process.env.PORTAL_SCREENSHOTS, name + ".png"),
+        });
+    };
+    await page.locator(".hero").waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    await capture("workspace");
+    await page.getByRole("button", { name: /بازنویسی متن/ }).click();
+    assert.ok(
+      (await page.locator("#prompt").inputValue()).includes("بازنویسی"),
+    );
+    await page.getByRole("button", { name: "جمع کردن نوار گفتگوها" }).click();
+    await page.getByRole("button", { name: "باز کردن نوار گفتگوها" }).click();
     async function start(title, models, level) {
       await page.getByRole("button", { name: /گفتگوی تازه/ }).click();
+      await page
+        .getByRole("button", { name: "انتخاب مدل", exact: true })
+        .click();
       await page
         .getByRole("checkbox", { name: user + " fast", exact: true })
         .waitFor();
@@ -143,11 +174,22 @@ async function run() {
         .all()) {
         await checkbox.uncheck();
       }
+      const filter = page.getByRole("textbox", { name: "جست‌وجوی مدل" });
+      await filter.fill(user);
+      assert.equal(await page.getByRole("checkbox").count(), 3);
+      await filter.fill("");
       for (const model of models) {
         await page
           .getByRole("checkbox", { name: user + " " + model, exact: true })
           .check();
       }
+      if (models.length === 3)
+        assert.ok(
+          await page
+            .getByRole("checkbox", { checked: false })
+            .evaluateAll((els) => els.every((el) => el.disabled)),
+        );
+      await page.getByText("تنظیمات استدلال", { exact: true }).click();
       for (const model of models) {
         const select = page.getByRole("combobox", {
           name: "شدت استدلال " + user + " " + model,
@@ -156,22 +198,40 @@ async function run() {
           assert.equal(await select.locator('option[value="off"]').count(), 0);
         await select.selectOption(model === "fast" ? level : "high");
       }
+      await page.getByRole("button", { name: "انجام شد" }).click();
       await page.getByLabel("پیام شما", { exact: true }).fill(title);
-      await page
-        .getByRole("button", { name: /ارسال پیام|مقایسهٔ پاسخ‌ها/ })
-        .click();
+      if (level === "off") {
+        const prompt = page.locator("#prompt");
+        await prompt.press("Shift+Enter");
+        assert.ok((await prompt.inputValue()).includes("\n"));
+        await prompt.fill(title);
+        await prompt.dispatchEvent("keydown", {
+          key: "Enter",
+          isComposing: true,
+        });
+        assert.equal(await stop.count(), 0);
+        await prompt.press("Enter");
+      } else
+        await page
+          .getByRole("button", { name: /ارسال پیام|مقایسهٔ پاسخ‌ها/ })
+          .click();
       const task = title + "/fast";
       if (level !== "off") {
         const card = cards.filter({
           has: page.getByText(user + " fast", { exact: true }),
         });
-        await card.locator("summary").waitFor();
-        if (!(await card.locator("details").evaluate((el) => el.open)))
-          await card.locator("summary").click();
+        await card.locator(".reasoning summary").waitFor();
+        if (!(await card.locator(".reasoning").evaluate((el) => el.open)))
+          await card.locator(".reasoning summary").click();
         await card
           .locator(".reasoning")
           .getByText("TRACE[" + task + "]", { exact: true })
           .waitFor();
+        assert.equal(
+          await card.locator(".final-answer").count(),
+          1,
+          "Duplicate response card",
+        );
         assert.equal(await card.locator(".final-answer").textContent(), "");
         release(task + "/answer");
       }
@@ -189,7 +249,7 @@ async function run() {
     async function open(title) {
       await page
         .getByRole("navigation")
-        .getByRole("button", { name: new RegExp(title) })
+        .getByRole("button", { name: title, exact: true })
         .click();
       await page.getByRole("heading", { name: title, exact: true }).waitFor();
     }
@@ -238,7 +298,7 @@ async function run() {
     await cards.filter({ hasText: `LAST[${A}/fast]` }).waitFor();
     await cards.filter({ hasText: `LAST[${A}/slow]` }).waitFor();
     const first = cards.filter({ hasText: `LAST[${A}/fast]` });
-    await first.locator("summary").click();
+    await first.locator(".reasoning summary").click();
     await first
       .locator(".reasoning")
       .getByText(`TRACE[${A}/fast]`, { exact: true })
@@ -248,25 +308,159 @@ async function run() {
     );
     for (const colorScheme of ["dark", "light"]) {
       await page.emulateMedia({ colorScheme });
-      await page.setViewportSize({ width: 390, height: 844 });
-      await page.locator(`html[data-theme="${colorScheme}"]`).waitFor();
-      assert.ok(await first.locator(".reasoning p").isVisible());
-      assert.ok(
-        await page.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth,
-        ),
-      );
+      for (const width of [320, 390, 640, 768, 1024, 1440]) {
+        await page.setViewportSize({ width, height: 844 });
+        await page.locator(`html[data-theme="${colorScheme}"]`).waitFor();
+        assert.ok(await first.locator(".reasoning p").isVisible());
+        assert.ok(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+          "overflow " + width,
+        );
+        if (width === 320) {
+          await page.getByRole("button", { name: "باز کردن گفتگوها" }).click();
+          await page.getByRole("dialog").waitFor();
+          await page.keyboard.press("Escape");
+          assert.equal(
+            await page.evaluate(() =>
+              document.activeElement.getAttribute("aria-label"),
+            ),
+            "باز کردن گفتگوها",
+          );
+          const tabs = page.getByRole("group", {
+            name: "انتخاب پاسخ برای مطالعه",
+          });
+          await tabs.getByRole("button", { name: user + " slow" }).click();
+          assert.equal(
+            await cards.filter({ hasText: `LAST[${A}/fast]` }).isVisible(),
+            false,
+          );
+          await tabs.getByRole("button", { name: user + " fast" }).click();
+          await capture("mobile-" + colorScheme);
+        }
+      }
     }
     await page.setViewportSize({ width: 1280, height: 800 });
     await open(B);
     await cards.filter({ hasText: `FIRST[${B}/fast]` }).waitFor();
     assert.equal(await cards.filter({ hasText: "LAST[" }).count(), 0);
+    await cards.getByRole("button", { name: "آماده‌سازی ارسال مجدد" }).click();
+    assert.equal(await page.locator("#prompt").inputValue(), B);
     await open(C);
     await cards.filter({ hasText: `LAST[${C}/fast]` }).waitFor();
     assert.equal(await thread.locator("details.reasoning").count(), 0);
     assert.ok(!records.some((r) => r.event === "timeout"));
     assert.deepEqual(errors, []);
     django(checkAccounting, { titles: [A, B, C] });
+    const D = "مقایسه Markdown";
+    await start(D, ["fast", "slow"], "off");
+    release(D + "/fast");
+    release(D + "/slow");
+    await stop.waitFor({ state: "hidden" });
+    const rich = cards.filter({ hasText: user + " fast" });
+    await rich.locator("table").waitFor();
+    assert.equal(await cards.count(), 2);
+    assert.equal(await rich.locator("pre").getAttribute("dir"), "ltr");
+    assert.ok((await rich.locator("pre .token.keyword").count()) > 0);
+    assert.equal(await rich.locator("a").count(), 1);
+    assert.equal(await rich.locator("img,script,iframe,mark").count(), 0);
+    await rich.getByRole("button", { name: "کپی کد" }).click();
+    assert.equal(
+      await page.evaluate(() => navigator.clipboard.readText()),
+      "def hello(): return 1",
+    );
+    await capture("comparison");
+    await rich.getByRole("button", { name: "گسترش پاسخ" }).click();
+    await page.getByRole("dialog").locator("table").waitFor();
+    await page.keyboard.press("Escape");
+    const usage = rich.locator(".usage");
+    await usage.locator("summary").click();
+    assert.ok((await usage.innerText()).includes("۲۰ (گزارش سرویس)"));
+    await page
+      .getByRole("button", { name: "مدیریت گفتگو " + D, exact: true })
+      .click();
+    await page.getByLabel("عنوان گفتگو").fill("بازبینی متن");
+    await page.getByRole("button", { name: "ذخیرهٔ عنوان" }).click();
+    await page
+      .getByRole("heading", { name: "بازبینی متن", exact: true })
+      .waitFor();
+    const search = page.getByRole("searchbox", { name: "جست‌وجوی گفتگوها" });
+    await search.fill("بازبینی");
+    await until(
+      async () => (await page.locator(".history-link").count()) === 1,
+      "Search results",
+    );
+    await page
+      .getByRole("button", { name: "مدیریت گفتگو بازبینی متن" })
+      .click();
+    await page.getByRole("button", { name: "حذف گفتگو", exact: true }).click();
+    await page.getByRole("button", { name: "تأیید حذف" }).click();
+    await page.getByText("گفتگویی با این عنوان پیدا نشد.").waitFor();
+    const E = "مطالعهٔ پاسخ طولانی";
+    await start(E, ["fast"], "off");
+    release(E + "/fast/body");
+    await thread.getByText("بند پایانی", { exact: true }).waitFor();
+    await thread.locator("pre").getByText("live", { exact: true }).waitFor();
+    await thread.evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    await page.getByRole("button", { name: "آخرین پیام" }).waitFor();
+    release(E + "/fast");
+    await stop.waitFor({ state: "hidden" });
+    assert.ok(
+      await thread.evaluate((el) => el.scrollTop < 30),
+      "Streaming interrupted reading position",
+    );
+    await page.getByRole("button", { name: "آخرین پیام" }).click();
+    await until(
+      async () =>
+        await thread.evaluate(
+          (el) => el.scrollHeight - el.clientHeight - el.scrollTop < 75,
+        ),
+      "Jump to last message",
+    );
+    const touch = await browser.newContext({
+      isMobile: true,
+      hasTouch: true,
+      viewport: { width: 390, height: 844 },
+      storageState: await page.context().storageState(),
+    });
+    try {
+      const phone = await touch.newPage();
+      phone.on("pageerror", (e) => errors.push(e.message));
+      await phone.goto(base);
+      const draft = phone.getByLabel("پیام شما", { exact: true });
+      await draft.fill("خط اول");
+      await draft.press("Enter");
+      assert.equal(await draft.inputValue(), "خط اول\n");
+      await phone
+        .getByRole("button", { name: "انتخاب مدل", exact: true })
+        .tap();
+      await phone
+        .getByRole("dialog")
+        .getByRole("textbox", { name: "جست‌وجوی مدل" })
+        .fill(user);
+      assert.equal(await phone.getByRole("checkbox").count(), 3);
+      await phone.getByRole("button", { name: "انجام شد" }).tap();
+      await phone.getByRole("button", { name: "باز کردن گفتگوها" }).tap();
+      await phone.getByRole("button", { name: A, exact: true }).tap();
+      await phone
+        .getByRole("group", { name: "انتخاب پاسخ برای مطالعه" })
+        .getByRole("button", { name: user + " failure" })
+        .tap();
+      assert.ok(
+        await phone.locator(".assistant[data-status=failed]").isVisible(),
+      );
+      assert.ok(
+        await phone.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      );
+    } finally {
+      await touch.close();
+    }
+    assert.deepEqual(errors, []);
     console.log(
       "PASS: separate reasoning deltas, independent effort settings, reload, mobile and themes; streamed three independent chats through Nginx. Stop closed only B upstream. Three comparison models ran concurrently, and two successful replies survived their sibling's HTTP 500 and page reload.",
     );

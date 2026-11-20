@@ -46,9 +46,11 @@ class MessageSerializer(serializers.ModelSerializer):
 
 
 class ConversationSerializer(serializers.ModelSerializer):
+    is_processing = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = Conversation
-        fields = ["id", "title", "created_at"]
+        fields = ["id", "title", "created_at", "is_processing"]
 
 
 class SendSerializer(serializers.Serializer):

@@ -58,3 +58,9 @@ docker compose run --rm backend python manage.py test portal --verbosity 2
 فایل‌های جدید شامل `backend/portal/thinking.py` برای اعتبارسنجی و ساخت پارامترهای درخواست، `backend/portal/tokens.py` برای شمارش و خواندن Usage، `backend/portal/migrations/0006_thinking_and_token_usage.py`، `backend/portal/test_thinking.py` و `docs/thinking.md` هستند.
 
 فایل‌های تغییرکرده در Backend شامل `models.py`، `admin.py`، `serializers.py`، `providers.py`، `services.py`، `streaming.py`، `views.py`، آزمون‌های اتصال، ارائه‌دهنده و HTTP و `backend/Dockerfile` هستند. در Frontend فایل‌های `main.tsx`، `useChats.ts`، `stream.ts`، `types.ts`، `MessageList.tsx` و `style.css` تغییر کردند. سناریوی مرورگر و سرویس کنترل‌شدهٔ آن در `tests/browser` و راهنماهای README، Streaming و اعتبارسنجی نیز به‌روز شدند.
+
+## آزمون میز گفتگو و مقایسه
+
+روی PostgreSQL 17 و image دارای tokenizer محلی، هر ۶۵ آزمون Django موفق شد. آزمون‌های تاریخچه، جست‌وجو در صفحهٔ دوم، وضعیت پردازش، تغییر عنوان، انقضای تاریخچه، مالکیت و CSRF را هم بررسی کردند. بررسی Django، تطبیق migrationها، Ruff، ساخت TypeScript و Vite و اعتبارسنجی پیکربندی Nginx موفق بودند.
+
+Playwright روی خروجی تولیدی و یک Provider آزمایشی HTTP، مقایسهٔ یک تا سه مدل، تنظیم استدلال، توقف مستقل، کپی کد، Markdown ناقص، خواندن پیام‌های قبلی حین Streaming، تغییر نام، جست‌وجو و حذف گفتگو را اجرا کرد. Chromium در دو تم و عرض‌های ۳۲۰، ۳۹۰، ۶۴۰، ۷۶۸، ۱۰۲۴ و ۱۴۴۰ پیکسل سرریز افقی صفحه نشان نداد. ورود از نشست موجود، کادر پیام و انتخاب پاسخ در مرورگر شبیه‌سازی‌شدهٔ لمسی نیز بررسی شد. آزمون مرورگر اتصال به سرویس تجاری یا نتیجه‌ای برای Safari و Firefox را تأیید نمی‌کند. [راهنمای اجرای آزمون مرورگر](../tests/browser/README.md)

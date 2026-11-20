@@ -1,141 +1,283 @@
-import { useState } from "react";
+import {
+  memo,
+  useDeferredValue,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  Activity,
+  Box,
+  ChartNoAxesColumn,
+  CircleCheck,
+  Expand,
+  RotateCcw,
+  UserRound,
+} from "lucide-react";
 import type { Message } from "./types";
-
-const count = (value?: number | null) =>
-  value == null ? "نامعلوم" : value.toLocaleString("fa-IR");
-
-function usageLabel(m: Message, field: "in" | "out" | "total") {
-  const value =
-    field === "in"
-      ? m.input_tokens
-      : field === "out"
-        ? m.output_tokens
-        : m.total_tokens;
-  if (value == null) return "";
-  const estimate =
-    m.usage_source === "estimated" ||
-    m.usage_source === "estimate_" + field ||
-    (field === "total" &&
-      (m.usage_source === "estimate_in" || m.usage_source === "estimate_out"));
-  return estimate ? "(تخمینی)" : "(گزارش سرویس)";
-}
+import { CopyButton, Dialog, number, thinkingNames } from "./ui";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 const statusText = {
-  running: "در حال دریافت…",
-  completed: "",
-  partial: "پاسخ بعضی مدل‌ها کامل نشد",
+  running: "در حال دریافت",
+  completed: "تکمیل شد",
+  partial: "بخشی از پاسخ‌ها کامل نشد",
   failed: "ناموفق",
   cancelled: "متوقف شد",
 };
+type Retry = (content: string, modelId?: number | null) => void;
 
-function Reasoning({ message }: { message: Message }) {
-  const [open, setOpen] = useState(message.status === "running");
+function TokenUsage({ m }: { m: Message }) {
+  if (!m.usage_source || m.usage_source === "none") return null;
+  function amount(field: "in" | "out" | "total", n?: number | null) {
+    if (n == null) return "نامعلوم";
+    const estimated =
+      m.usage_source === "estimated" ||
+      m.usage_source === "estimate_" + field ||
+      (field === "total" &&
+        (m.usage_source === "estimate_in" ||
+          m.usage_source === "estimate_out"));
+    return number(n) + (estimated ? " (تخمینی)" : " (گزارش سرویس)");
+  }
   return (
-    <details
-      className="reasoning"
-      open={open}
-      onToggle={(e) => setOpen(e.currentTarget.open)}
-    >
+    <details className="usage">
       <summary>
-        فرایند استدلال مدل{" "}
-        {message.status === "running" && !message.content && "· در حال دریافت"}
+        <ChartNoAxesColumn /> مصرف توکن
+        {m.total_tokens != null && " · " + number(m.total_tokens)}
       </summary>
-      <p dir="auto">{message.reasoning_content}</p>
+      {m.usage_source === "unknown" ? (
+        <p>مصرف گزارش نشد.</p>
+      ) : (
+        <dl>
+          <dt>ورودی</dt>
+          <dd>{amount("in", m.input_tokens)}</dd>
+          <dt>خروجی</dt>
+          <dd>{amount("out", m.output_tokens)}</dd>
+          <dt>مجموع</dt>
+          <dd>{amount("total", m.total_tokens)}</dd>
+          {(m.thinking_level || m.reasoning_tokens != null) && (
+            <>
+              <dt>سهم استدلال</dt>
+              <dd>
+                {m.reasoning_tokens == null
+                  ? "نامعلوم"
+                  : number(m.reasoning_tokens) + " (گزارش سرویس)"}
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
     </details>
   );
 }
+function ResponseBody({ m }: { m: Message }) {
+  const [open, setOpen] = useState(m.status === "running");
+  const answer = useDeferredValue(m.content);
+  return (
+    <>
+      {m.reasoning_content && (
+        <details
+          className="reasoning"
+          open={open}
+          onToggle={(e) => setOpen(e.currentTarget.open)}
+        >
+          <summary>
+            <Activity /> فرایند استدلال مدل{" "}
+            {m.thinking_level &&
+              "· " + (thinkingNames[m.thinking_level] ?? m.thinking_level)}
+          </summary>
+          <p dir="auto">{m.reasoning_content}</p>
+        </details>
+      )}
+      {m.reasoning_content && m.content && (
+        <small className="section-label">پاسخ نهایی</small>
+      )}
+      <MarkdownRenderer text={answer} />
+      {m.status === "running" && !m.content && (
+        <div className="typing" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </div>
+      )}
+      {m.error && <p className="error">{m.error}</p>}
+    </>
+  );
+}
 
+const ResponseCard = memo(function ResponseCard({
+  m,
+  question,
+  retry,
+}: {
+  m: Message;
+  question?: Message;
+  retry?: Retry;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+  useLayoutEffect(() => {
+    const el = body.current!;
+    if (m.status !== "running") return;
+    const observer = new ResizeObserver(() => {
+      if (
+        follow.current &&
+        el.clientHeight &&
+        el.scrollHeight > el.clientHeight
+      )
+        el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el.firstElementChild!);
+    return () => observer.disconnect();
+  }, [m.status]);
+  return (
+    <article
+      className="message assistant"
+      data-model-id={m.model_id}
+      data-status={m.status}
+    >
+      <div className="card-head">
+        <span className="model-mark">
+          <Box />
+        </span>
+        <div>
+          <strong className="message-label" dir="auto">
+            {m.model_name || "مدل"}
+          </strong>
+          {m.status && (
+            <small className="card-status" role="status">
+              {m.status === "completed" && <CircleCheck />}
+              {statusText[m.status]}
+            </small>
+          )}
+        </div>
+        <button
+          className="icon"
+          title="گسترش پاسخ"
+          aria-label="گسترش پاسخ"
+          onClick={() => setExpanded(true)}
+        >
+          <Expand />
+        </button>
+      </div>
+      <div
+        className="card-body"
+        ref={body}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          follow.current =
+            el.scrollHeight - el.scrollTop - el.clientHeight < 75;
+        }}
+      >
+        <div>
+          <ResponseBody m={m} />
+        </div>
+      </div>
+      <footer>
+        {m.content && <CopyButton text={m.content} label="کپی پاسخ" />}
+        <TokenUsage m={m} />
+        {retry &&
+          question &&
+          (m.status === "failed" || m.status === "cancelled") && (
+            <button
+              className="retry"
+              onClick={() => retry(question.content, m.model_id)}
+            >
+              <RotateCcw />
+              آماده‌سازی ارسال مجدد
+            </button>
+          )}
+      </footer>
+      {expanded && (
+        <Dialog
+          title={m.model_name || "پاسخ مدل"}
+          onClose={() => setExpanded(false)}
+        >
+          <div className="reader">
+            <ResponseBody m={m} />
+            <TokenUsage m={m} />
+            {m.content && <CopyButton text={m.content} label="کپی پاسخ" />}
+          </div>
+        </Dialog>
+      )}
+    </article>
+  );
+});
+
+function Turn({ turn, retry }: { turn: Message[]; retry?: Retry }) {
+  const question = turn.find((m) => m.role === "user");
+  const replies = turn.filter((m) => m.role === "assistant");
+  const [tab, setTab] = useState(0);
+  return (
+    <section className="turn">
+      {question && (
+        <article className="message user" data-status={question.status}>
+          <div className="line">
+            <strong>
+              <UserRound /> شما
+            </strong>
+            <CopyButton text={question.content} label="کپی پیام" />
+          </div>
+          <p dir="auto">{question.content}</p>
+          {question.status &&
+            !["completed", "running"].includes(question.status) && (
+              <small>{statusText[question.status]}</small>
+            )}
+        </article>
+      )}
+      {replies.length > 1 && (
+        <div
+          className="compare-tabs"
+          role="group"
+          aria-label="انتخاب پاسخ برای مطالعه"
+        >
+          {replies.map((m, i) => (
+            <button
+              key={m.model_id ?? m.id}
+              aria-pressed={tab === i}
+              onClick={() => setTab(i)}
+            >
+              <bdi>{m.model_name}</bdi>
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="responses" data-count={replies.length}>
+        {replies.map((m, i) => (
+          <div
+            key={m.model_id ?? m.id}
+            className="compare-column"
+            data-visible={i === Math.min(tab, replies.length - 1)}
+          >
+            <ResponseCard m={m} question={question} retry={retry} />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 export function MessageList({
   messages,
   retry,
 }: {
   messages: Message[];
-  retry?: (content: string, modelId?: number | null) => void;
+  retry?: Retry;
 }) {
-  // Persisted and live replies use the same cards, ordered under their question.
   const turns: Message[][] = [];
-  for (const message of messages) {
-    if (message.role === "user" || !turns.length) turns.push([]);
-    turns[turns.length - 1].push(message);
+  for (const m of messages) {
+    if (m.role === "user" || !turns.length) turns.push([]);
+    turns[turns.length - 1].push(m);
   }
   return (
-    <>
-      {turns.map((turn) => {
-        const question = turn.find((m) => m.role === "user");
-        return (
-          <section key={turn[0].id} className="turn">
-            {question && (
-              <article className="message user" data-status={question.status}>
-                <div className="message-label">شما</div>
-                <p dir="auto">{question.content}</p>
-                {question.status && (
-                  <small>{statusText[question.status]}</small>
-                )}
-              </article>
-            )}
-            <div className="responses">
-              {turn
-                .filter((m) => m.role === "assistant")
-                .map((m) => (
-                  <article
-                    key={m.id}
-                    className="message assistant"
-                    data-model-id={m.model_id}
-                    data-status={m.status}
-                  >
-                    <div className="message-label">{m.model_name}</div>
-                    {m.thinking_level && (
-                      <small>Thinking · {m.thinking_level.toUpperCase()}</small>
-                    )}
-                    {m.reasoning_content && <Reasoning message={m} />}
-                    {m.reasoning_content && m.content && (
-                      <strong>پاسخ نهایی</strong>
-                    )}
-                    <p className="final-answer" dir="auto">
-                      {m.content}
-                    </p>
-                    {m.status && m.status !== "completed" && (
-                      <small role="status">{statusText[m.status]} </small>
-                    )}
-                    {m.error && (
-                      <small className="reply-error">{m.error}</small>
-                    )}
-                    {m.usage_source === "unknown" ? (
-                      <small>مصرف گزارش نشد</small>
-                    ) : (
-                      m.usage_source !== "none" && (
-                        <small>
-                          ورودی {count(m.input_tokens)} {usageLabel(m, "in")} ·
-                          خروجی {count(m.output_tokens)} {usageLabel(m, "out")}{" "}
-                          · مجموع {count(m.total_tokens)}{" "}
-                          {usageLabel(m, "total")}
-                          {m.thinking_level || m.reasoning_tokens != null
-                            ? " · سهم استدلال " +
-                              count(m.reasoning_tokens) +
-                              (m.reasoning_tokens != null
-                                ? " (گزارش سرویس)"
-                                : "")
-                            : ""}
-                        </small>
-                      )
-                    )}
-                    {retry &&
-                      question &&
-                      (m.status === "failed" || m.status === "cancelled") && (
-                        <button
-                          type="button"
-                          className="retry"
-                          onClick={() => retry(question.content, m.model_id)}
-                        >
-                          آماده‌سازی ارسال مجدد
-                        </button>
-                      )}
-                  </article>
-                ))}
-            </div>
-          </section>
-        );
-      })}
-    </>
+    <div className="messages">
+      {turns.map((turn) => (
+        <Turn
+          key={turn[0].request_id ?? turn[0].id}
+          turn={turn}
+          retry={retry}
+        />
+      ))}
+    </div>
   );
 }

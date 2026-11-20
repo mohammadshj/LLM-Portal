@@ -12,7 +12,11 @@ export type Model = {
   thinking_levels: string[];
   thinking_default: string;
 };
-export type Conversation = { id: number; title: string };
+export type Conversation = {
+  id: number;
+  title: string;
+  is_processing?: boolean;
+};
 export type Message = {
   id: number;
   role: "user" | "assistant";

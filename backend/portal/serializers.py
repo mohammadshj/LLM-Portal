@@ -70,7 +70,18 @@ class ConversationSerializer(serializers.ModelSerializer):
         fields = ["id", "title", "created_at", "is_processing"]
 
 
+class BranchSelectionSerializer(serializers.Serializer):
+    version_id = serializers.IntegerField(min_value=1)
+    expected_leaf = serializers.IntegerField(
+        min_value=1, allow_null=True, required=False
+    )
+
+
 class SendSerializer(serializers.Serializer):
+    edit_of = serializers.IntegerField(min_value=1, required=False)
+    expected_leaf = serializers.IntegerField(
+        min_value=1, allow_null=True, required=False
+    )
     reasoning = serializers.DictField(child=serializers.DictField(), required=False)
     thinking = serializers.DictField(
         child=serializers.RegexField(
@@ -81,7 +92,10 @@ class SendSerializer(serializers.Serializer):
     request_id = serializers.UUIDField(required=False)
     content = serializers.CharField(max_length=12000, trim_whitespace=True)
     model_ids = serializers.ListField(
-        child=serializers.IntegerField(min_value=1), min_length=1, max_length=3
+        child=serializers.IntegerField(min_value=1),
+        min_length=1,
+        max_length=3,
+        required=False,
     )
 
     def validate_model_ids(self, value):

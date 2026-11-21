@@ -8,12 +8,19 @@
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
+    "hast-util-from-html-isomorphic": "^2.0.0",
+    "katex": "^0.16.47",
     "lucide-react": "^1.77.0",
     "prismjs": "^1.30.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
+    "remark-parse": "^11.0.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.2.0"
   },
   "devDependencies": {
     "@types/prismjs": "^1.26.6",

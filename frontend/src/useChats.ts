@@ -11,7 +11,19 @@ import type {
   ReasoningSettings,
 } from "./types";
 
-type LiveTurn = { id: string; messages: Message[]; stopping: boolean };
+export type Revision = {
+  question: Message;
+  content: string;
+  replies: Message[];
+  changeModels: boolean;
+};
+type LiveTurn = {
+  editOf?: number;
+  confirmed?: boolean;
+  id: string;
+  messages: Message[];
+  stopping: boolean;
+};
 type Chat = {
   prompt: string;
   selection?: number[];
@@ -21,6 +33,7 @@ type Chat = {
   error?: string;
   readError?: string;
   removing?: boolean;
+  switching?: boolean;
   loading?: boolean;
 };
 const empty: Chat = { prompt: "" };
@@ -136,6 +149,7 @@ export function useChats(
       !mounted.current ||
       id < 0 ||
       sends.current.has(id) ||
+      current.current[id]?.switching ||
       current.current[id]?.removing
     )
       return;
@@ -188,16 +202,53 @@ export function useChats(
     setActiveId(id);
     void load(id);
   }
-  async function send(selected: Model[]) {
+  async function switchVersion(anchor: number, target: number) {
+    const id = activeId;
+    if (
+      !current.current[id]?.detail ||
+      current.current[id]?.switching ||
+      busy(id) ||
+      current.current[id]?.removing
+    )
+      return;
+    invalidateRead(id);
+    edit(id, (c) => ({ ...c, switching: true, error: undefined }));
+    try {
+      const detail = await api<Detail>(
+        `conversations/${id}/messages/${anchor}/versions/`,
+        "POST",
+        {
+          version_id: target,
+          expected_leaf: current.current[id]?.detail?.active_leaf,
+        },
+      );
+      edit(id, (c) => ({
+        ...c,
+        detail,
+        live: undefined,
+        switching: false,
+        readError: undefined,
+        loading: false,
+      }));
+    } catch (e) {
+      edit(id, (c) => ({ ...c, switching: false, error: errorMessage(e) }));
+      await load(id);
+    }
+  }
+  async function send(selected: Model[], revision?: Revision) {
     const source = activeId;
     const state = current.current[source] ?? empty;
-    const content = state.prompt.trim();
+    const content = (revision?.content ?? state.prompt).trim();
+    const inherit = revision && !revision.changeModels;
     if (
       !content ||
-      !selected.length ||
-      selected.some(
-        (m) => !ready(m.reasoning_profile, state.thinking?.[m.id]),
-      ) ||
+      (!inherit &&
+        (!selected.length ||
+          selected.some(
+            (m) => !ready(m.reasoning_profile, state.thinking?.[m.id]),
+          ))) ||
+      state.live ||
+      state.switching ||
       state.removing ||
       state.loading ||
       state.detail?.active_request_id ||
@@ -226,16 +277,30 @@ export function useChats(
         state.thinking?.[m.id],
       );
     }
+    const targets = inherit
+      ? revision.replies.map((m) => ({
+          id: m.model_id!,
+          name: m.model_name,
+          reasoning_settings: m.reasoning_settings,
+          thinking_level: m.thinking_level,
+        }))
+      : selected.map((m) => ({
+          id: m.id,
+          name: m.name,
+          reasoning_settings: reasoning[m.id],
+          thinking_level: undefined,
+        }));
     const sentAt = performance.now();
     const messages: Message[] = [
       { ...common, id: -1, role: "user", content, model_name: null },
-      ...selected.map((m) => ({
+      ...targets.map((m) => ({
         ...common,
         id: -1 - m.id,
         role: "assistant" as const,
         content: "",
         model_name: m.name,
-        reasoning_settings: reasoning[m.id],
+        reasoning_settings: m.reasoning_settings,
+        thinking_level: m.thinking_level,
         model_id: m.id,
         status: "running" as const,
         elapsed_ms: 0,
@@ -244,9 +309,14 @@ export function useChats(
     ];
     edit(source, (c) => ({
       ...c,
-      prompt: "",
+      prompt: revision ? c.prompt : "",
       error: undefined,
-      live: { id: run.id, messages, stopping: false },
+      live: {
+        id: run.id,
+        messages,
+        stopping: false,
+        editOf: revision?.question.id,
+      },
     }));
     try {
       if (source < 0) {
@@ -275,14 +345,22 @@ export function useChats(
         run.conversation,
         {
           content,
-          model_ids: selected.map((m) => m.id),
-          reasoning,
+          model_ids: inherit ? undefined : selected.map((m) => m.id),
+          reasoning: inherit ? undefined : reasoning,
+          edit_of: revision?.question.id,
+          expected_leaf: state.detail?.active_leaf ?? null,
           request_id: run.id,
         },
         run.controller.signal,
         (event) => {
           if (event.type === "start") {
             run.started = true;
+            if (revision)
+              edit(run.conversation, (c) =>
+                c.live?.id === run.id
+                  ? { ...c, live: { ...c.live, confirmed: true } }
+                  : c,
+              );
           }
           if (event.model_id && sends.current.get(run.conversation) === run) {
             edit(run.conversation, (c) =>
@@ -304,7 +382,7 @@ export function useChats(
           edit(id, (c) => ({
             ...c,
             live: undefined,
-            prompt: c.prompt || content,
+            prompt: revision ? c.prompt : c.prompt || content,
           }));
         await load(id);
       }
@@ -358,6 +436,7 @@ export function useChats(
       id < 0 ||
       sends.current.has(id) ||
       chat?.detail?.active_request_id ||
+      chat?.switching ||
       chat?.removing
     )
       throw new Error("پس از پایان پردازش گفتگو دوباره تلاش کنید.");
@@ -383,11 +462,14 @@ export function useChats(
     (chats[id]?.detail ? !!chats[id]?.detail?.active_request_id : listed);
   // A reload can observe a turn still being settled. Poll that turn until the
   // server has persisted final messages, retaining any local partials meanwhile.
-  const live = chat.live;
+  const live =
+    chat.live?.editOf && !chat.live.confirmed ? undefined : chat.live;
   const stored = chat.detail?.messages ?? [];
   const turn =
     live && stored.find((m) => m.role === "user" && m.request_id === live.id);
-  const messages = stored.filter(
+  const cut = live?.editOf ? stored.findIndex((m) => m.id === live.editOf) : -1;
+  const prefix = cut < 0 ? stored : stored.slice(0, cut);
+  const messages = prefix.filter(
     (m) =>
       !live || (m.request_id !== live.id && (!turn || m.parent_id !== turn.id)),
   );
@@ -427,6 +509,7 @@ export function useChats(
     send,
     stop,
     remove,
+    switchVersion,
     renamed: (id: number, title: string) => {
       if (!current.current[id]) return;
       invalidateRead(id);

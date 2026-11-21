@@ -418,6 +418,120 @@ async function run() {
     assert.ok(!records.some((r) => r.event === "timeout"));
     assert.deepEqual(errors, []);
     django(checkAccounting, { titles: [A, B, C] });
+    // Fork an earlier three-model turn. Look at a different branch after a refresh.
+    await open(A);
+    const questions = thread.locator("article.user");
+    const continuation = "ادامهٔ نسخهٔ اصلی";
+    await page.locator("#prompt").fill(continuation);
+    await page.locator("#prompt").press("Enter");
+    for (const suffix of ["fast/answer", "fast", "slow", "failure"])
+      release(continuation + "/" + suffix);
+    await questions.filter({ hasText: continuation }).waitFor();
+    await stop.waitFor({ state: "hidden" });
+    const editQuestion = questions
+      .first()
+      .getByRole("button", { name: "ویرایش پیام" });
+    await editQuestion.click();
+    const editor = page.getByRole("textbox", { name: "متن ویرایش‌شدهٔ پیام" });
+    assert.equal(await editor.inputValue(), A);
+    await editor.fill("متن انصراف");
+    await questions.first().getByRole("button", { name: "انصراف" }).click();
+    await editQuestion.click();
+    assert.equal(await editor.inputValue(), A);
+    const revised = String.raw`ویرایش ریاضی با \(E=mc^2\)`;
+    await editor.fill(revised);
+    await page.getByRole("button", { name: "ذخیره و ارسال" }).click();
+    await until(
+      () =>
+        ["fast", "slow", "failure"].every((m) =>
+          observed("started", revised + "/" + m),
+        ),
+      "Edited message did not inherit all models",
+    );
+    assert.ok(
+      records.some((r) => r.task === revised + "/fast" && r.level === "low"),
+    );
+    release(revised + "/fast/answer");
+    const editedCard = cards.filter({ hasText: user + " fast" });
+    await editedCard
+      .locator(".final-answer")
+      .getByText(/frac/)
+      .first()
+      .waitFor();
+    assert.equal(await questions.count(), 1);
+    await questions.first().locator(".katex").waitFor();
+    for (const m of ["fast", "slow", "failure"]) release(revised + "/" + m);
+    await stop.waitFor({ state: "hidden" });
+    await editedCard.locator(".katex-display").first().waitFor();
+    assert.equal(
+      await editedCard
+        .locator(".katex-display annotation")
+        .first()
+        .textContent(),
+      String.raw`\frac{a}{b}`,
+    );
+    assert.equal(
+      await editedCard.locator(".final-answer code").textContent(),
+      String.raw`\(literal\)`,
+    );
+    await page.setViewportSize({ width: 320, height: 844 });
+    for (const colorScheme of ["dark", "light"]) {
+      await page.emulateMedia({ colorScheme });
+      await page.locator(`html[data-theme="${colorScheme}"]`).waitFor();
+      assert.equal(
+        await questions
+          .first()
+          .locator(".markdown p")
+          .first()
+          .evaluate((el) => getComputedStyle(el).direction),
+        "rtl",
+      );
+      const longMath = editedCard.locator(".katex-display").last();
+      assert.ok(
+        await longMath.evaluate(
+          (el) =>
+            getComputedStyle(el).direction === "ltr" &&
+            el.scrollWidth > el.clientWidth &&
+            getComputedStyle(el).overflowX === "auto",
+        ),
+      );
+      assert.ok(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      );
+    }
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await questions.first().getByText("۱ / ۲", { exact: true }).waitFor();
+    assert.ok(
+      await questions
+        .first()
+        .getByRole("button", { name: "نسخهٔ جدیدتر" })
+        .isDisabled(),
+    );
+    const callsBeforeBrowse = records.filter(
+      (r) => r.event === "started",
+    ).length;
+    await questions
+      .first()
+      .getByRole("button", { name: "نسخهٔ قدیمی‌تر" })
+      .click();
+    await questions.filter({ hasText: continuation }).waitFor();
+    await questions.first().getByText("۲ / ۲", { exact: true }).waitFor();
+    await page.reload();
+    await open(A);
+    await questions.filter({ hasText: continuation }).waitFor();
+    await questions
+      .first()
+      .getByRole("button", { name: "نسخهٔ جدیدتر" })
+      .click();
+    await questions.first().locator(".katex").waitFor();
+    assert.equal(await questions.count(), 1);
+    assert.equal(await cards.count(), 3);
+    assert.equal(
+      records.filter((r) => r.event === "started").length,
+      callsBeforeBrowse,
+    );
     const D = "مقایسه Markdown";
     await start(D, ["fast", "slow"], "off");
     release(D + "/fast");
@@ -618,7 +732,7 @@ conn.models.filter(auto_thinking=True).update(enabled=True)
     await stop.waitFor({ state: "hidden" });
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: separate reasoning deltas, independent effort settings, reload, mobile and themes; streamed three independent chats through Nginx. Stop closed only B upstream. Three comparison models ran concurrently; synchronized catalog efforts reached the provider through the live selector.",
+      "PASS: separate reasoning deltas, independent effort settings, reload, mobile and themes; streamed three independent chats through Nginx. Stop closed only B upstream. Three comparison models ran concurrently; synchronized catalog efforts reached the provider through the live selector. Edited and restored a three-model branch without extra provider calls; verified streamed math, literal code and RTL mobile layout in both themes.",
     );
   } finally {
     try {

@@ -83,6 +83,8 @@ export type Message = {
   output_tokens: number | null;
 };
 export type Detail = Conversation & {
+  active_leaf?: number | null;
+  versions?: Record<number, number[]>;
   active_request_id?: string | null;
   messages: Message[];
   errors: { model: string; detail: string }[];

@@ -16,5 +16,9 @@ urlpatterns = [
         "conversations/<int:pk>/requests/<uuid:request_id>/cancel/",
         views.cancel_generation,
     ),
+    path(
+        "conversations/<int:pk>/messages/<int:message_id>/versions/",
+        views.message_versions,
+    ),
     path("usage/", views.usage),
 ]

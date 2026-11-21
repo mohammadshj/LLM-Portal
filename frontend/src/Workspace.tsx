@@ -18,6 +18,7 @@ import { Thread, Welcome } from "./Thread";
 import type { User, Usage, Model, Conversation } from "./types";
 import { Dialog, useMedia } from "./ui";
 import { UsageReport } from "./UsageReport";
+import { ready } from "./reasoning";
 import { useChats } from "./useChats";
 import { useHistory } from "./useHistory";
 
@@ -102,6 +103,13 @@ export function Workspace({
   const active = chat.detail ?? history.items.find((c) => c.id === activeId);
   const processing = chats.busy(activeId);
   const selected = chat.selection ?? models.slice(0, 1).map((m) => m.id);
+  const selectedModels = selected
+    .map((id) => models.find((m) => m.id === id))
+    .filter((m): m is Model => !!m);
+  function keepScroll() {
+    const current = positions.current.get(activeId);
+    positions.current.set(activeId, { top: current?.top ?? 0, follow: false });
+  }
   function change(action: () => void) {
     ++reportVersion.current;
     setDrawer(false);
@@ -277,6 +285,30 @@ export function Workspace({
                 <Welcome prepare={prepare} />
               ) : (
                 <MessageList
+                  actions={{
+                    versions: chat.detail?.versions ?? {},
+                    locked: !!(
+                      processing ||
+                      chat.switching ||
+                      chat.loading ||
+                      chat.removing ||
+                      chat.live
+                    ),
+                    canUseSelection:
+                      selectedModels.length > 0 &&
+                      selectedModels.every((m) =>
+                        ready(m.reasoning_profile, chat.thinking?.[m.id]),
+                      ),
+                    selectedNames: selectedModels.map((m) => m.name).join("، "),
+                    save: (revision) => {
+                      keepScroll();
+                      void chats.send(selectedModels, revision);
+                    },
+                    select: (anchor, target) => {
+                      keepScroll();
+                      void chats.switchVersion(anchor, target);
+                    },
+                  }}
                   messages={messages}
                   retry={processing ? undefined : prepare}
                 />
@@ -293,16 +325,17 @@ export function Workspace({
               setPrompt={chats.setPrompt}
               processing={processing}
               stopping={!!chat.live?.stopping}
-              locked={!!(chat.loading || chat.removing)}
-              modelsLoading={modelsLoading}
-              exhausted={!quotaStale && user.tokens_used >= user.token_limit}
-              send={() =>
-                void chats.send(
-                  selected
-                    .map((id) => models.find((m) => m.id === id))
-                    .filter((m): m is Model => !!m),
+              locked={
+                !!(
+                  chat.loading ||
+                  chat.removing ||
+                  chat.switching ||
+                  (chat.live && !processing)
                 )
               }
+              modelsLoading={modelsLoading}
+              exhausted={!quotaStale && user.tokens_used >= user.token_limit}
+              send={() => void chats.send(selectedModels)}
               stop={chats.stop}
             />
           </>

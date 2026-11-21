@@ -237,6 +237,14 @@ class Message(models.Model):
     parent = models.ForeignKey(
         "self", null=True, on_delete=models.CASCADE, related_name="replies"
     )
+    # User rows sharing a predecessor are immutable revisions of one logical turn.
+    previous_turn = models.ForeignKey(
+        "self",
+        null=True,
+        on_delete=models.RESTRICT,
+        related_name="continuations",
+    )
+    selected_version = models.BooleanField(default=False)
     request_id = models.UUIDField(null=True)
     status = models.CharField(max_length=12, default="completed")
     error = models.CharField(max_length=240, blank=True)
@@ -256,6 +264,18 @@ class Message(models.Model):
     class Meta:
         ordering = ["id"]
         constraints = [
+            models.UniqueConstraint(
+                fields=["conversation"],
+                condition=models.Q(
+                    role="user", previous_turn__isnull=True, selected_version=True
+                ),
+                name="selected_root_per_chat",
+            ),
+            models.UniqueConstraint(
+                fields=["previous_turn"],
+                condition=models.Q(role="user", selected_version=True),
+                name="selected_child_per_turn",
+            ),
             models.UniqueConstraint(
                 fields=["conversation"],
                 condition=models.Q(role="user", status="running"),

@@ -12,8 +12,8 @@ import {
   CircleCheck,
   Expand,
   RotateCcw,
-  UserRound,
 } from "lucide-react";
+import { UserTurn, type VersionActions } from "./UserTurn";
 import type { Message } from "./types";
 import { CopyButton, Dialog, number } from "./ui";
 import { ResponseTime } from "./ResponseTime";
@@ -214,26 +214,32 @@ const ResponseCard = memo(function ResponseCard({
   );
 });
 
-function Turn({ turn, retry }: { turn: Message[]; retry?: Retry }) {
+function Turn({
+  turn,
+  retry,
+  actions,
+}: {
+  turn: Message[];
+  retry?: Retry;
+  actions: VersionActions;
+}) {
   const question = turn.find((m) => m.role === "user");
   const replies = turn.filter((m) => m.role === "assistant");
   const [tab, setTab] = useState(0);
   return (
     <section className="turn">
       {question && (
-        <article className="message user" data-status={question.status}>
-          <div className="line">
-            <strong>
-              <UserRound /> شما
-            </strong>
-            <CopyButton text={question.content} label="کپی پیام" />
-          </div>
-          <p dir="auto">{question.content}</p>
-          {question.status &&
-            !["completed", "running"].includes(question.status) && (
-              <small>{statusText[question.status]}</small>
-            )}
-        </article>
+        <UserTurn
+          question={question}
+          replies={replies}
+          actions={actions}
+          status={
+            question.status &&
+            !["completed", "running"].includes(question.status)
+              ? statusText[question.status]
+              : undefined
+          }
+        />
       )}
       {replies.length > 1 && (
         <div
@@ -269,9 +275,11 @@ function Turn({ turn, retry }: { turn: Message[]; retry?: Retry }) {
 export function MessageList({
   messages,
   retry,
+  actions,
 }: {
   messages: Message[];
   retry?: Retry;
+  actions: VersionActions;
 }) {
   const turns: Message[][] = [];
   for (const m of messages) {
@@ -283,6 +291,7 @@ export function MessageList({
       {turns.map((turn) => (
         <Turn
           key={turn[0].request_id ?? turn[0].id}
+          actions={actions}
           turn={turn}
           retry={retry}
         />

@@ -1,4 +1,4 @@
-import { memo, useMemo, type ReactNode } from "react";
+import { lazy, memo, Suspense, useMemo, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import Prism from "prismjs";
@@ -63,7 +63,14 @@ const components: Components = {
       .map((child) => (child.type === "text" ? child.value : ""))
       .join("")
       .replace(/\n$/, "");
-    return <CodeBlock text={text} language={lang || ""} />;
+    return (
+      <CodeBlock
+        text={text}
+        language={
+          code.properties.dataLiteralLanguage === "math" ? "math" : lang || ""
+        }
+      />
+    );
   },
   table({ children }) {
     return (
@@ -88,17 +95,29 @@ const components: Components = {
     return <p dir="auto">{children}</p>;
   },
 };
-const plugins = [remarkGfm];
+const MathMarkdownView = lazy(() => import("./MathMarkdownView"));
+const plainPlugins = [remarkGfm];
 export const MarkdownRenderer = memo(function MarkdownRenderer({
   text,
+  user = false,
 }: {
   text: string;
+  user?: boolean;
 }) {
+  const plain = (
+    <Markdown skipHtml remarkPlugins={plainPlugins} components={components}>
+      {text}
+    </Markdown>
+  );
   return (
-    <div className="markdown final-answer" dir="auto">
-      <Markdown skipHtml remarkPlugins={plugins} components={components}>
-        {text}
-      </Markdown>
+    <div className={user ? "markdown" : "markdown final-answer"} dir="auto">
+      {text.includes("$") || text.includes("\\(") || text.includes("\\[") ? (
+        <Suspense fallback={plain}>
+          <MathMarkdownView text={text} components={components} />
+        </Suspense>
+      ) : (
+        plain
+      )}
     </div>
   );
 });

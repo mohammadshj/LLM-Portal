@@ -129,6 +129,10 @@ class Provider(BaseHTTPRequestHandler):
                     + "\n\nبند پایانی\n\n```python\ndef live():"
                 )
                 self.event({"choices": [{"delta": {"content": text}}]})
+            if chat.startswith("ویرایش ریاضی"):
+                self.event(
+                    {"choices": [{"delta": {"content": "\n\n$$\n" + r"\frac{a}{b}"}}]}
+                )
             deadline = time.monotonic() + 60
             while not released(task) and time.monotonic() < deadline:
                 # The mock detects the backend's actual upstream socket close.
@@ -139,6 +143,14 @@ class Provider(BaseHTTPRequestHandler):
                 notify(event="timeout", task=task)
                 return
             markdown = " return 1\n```" if chat == "مطالعهٔ پاسخ طولانی" else ""
+            if chat.startswith("ویرایش ریاضی"):
+                markdown = (
+                    "\n$$\n\n`"
+                    + r"\(literal\)"
+                    + "`\n\n$$"
+                    + "+".join(["x_i"] * 60)
+                    + "$$"
+                )
             if chat == "مقایسه Markdown":
                 markdown = (
                     "\n\n## نتیجه\n\n**پررنگ** و *تأکید*\n\n> نقل قول\n\n"
@@ -157,6 +169,7 @@ class Provider(BaseHTTPRequestHandler):
                                 "content": (
                                     markdown + f"\n\nLAST[{task}]"
                                     if chat == "مطالعهٔ پاسخ طولانی"
+                                    or chat.startswith("ویرایش ریاضی")
                                     else f"LAST[{task}]" + markdown
                                 )
                             },

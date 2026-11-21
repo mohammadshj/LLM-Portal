@@ -11,6 +11,7 @@ from asgiref.sync import async_to_sync, sync_to_async
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 
+from .branches import UNSPECIFIED
 from .providers import ProviderError, stream_complete
 from .services import finish_reply, reserve_turn, should_cancel
 from .tokens import Usage
@@ -262,14 +263,24 @@ def send_message(
     user,
     conversation,
     content,
-    model_ids,
+    model_ids=None,
     request_id=None,
     thinking=None,
     reasoning=None,
+    edit_of=None,
+    expected_leaf=UNSPECIFIED,
 ):
     """Original JSON API, using the same cancellation, deadlines and accounting as SSE."""
     turn, jobs = reserve_turn(
-        user, conversation, content, model_ids, request_id, thinking, reasoning
+        user,
+        conversation,
+        content,
+        model_ids,
+        request_id,
+        thinking,
+        reasoning,
+        edit_of,
+        expected_leaf,
     )
     for job in jobs:
         if job.model.connection is not None:

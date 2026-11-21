@@ -320,6 +320,45 @@ class StreamHTTPTests(TransactionTestCase):
             ("cancelled", "متن اولیه", 0),
         )
 
+    async def test_disconnect_during_edit_preserves_both_versions(self):
+        chat = self.chats[0]
+        original = await Message.objects.acreate(
+            conversation=chat, role="user", content="original", selected_version=True
+        )
+        await Message.objects.acreate(
+            conversation=chat,
+            role="assistant",
+            parent=original,
+            model=self.models[0],
+            content="original answer",
+        )
+
+        async def stalled(model, messages, settings):
+            yield ProviderEvent("delta", text="partial revision")
+            await asyncio.Event().wait()
+
+        payload = {
+            "request_id": str(uuid4()),
+            "edit_of": original.pk,
+            "content": "edited",
+            "expected_leaf": original.pk,
+        }
+        with patch("portal.streaming.stream_complete", stalled):
+            async with self.open_stream(chat, payload) as stream:
+                await stream.until("delta")
+        new = await Message.objects.aget(
+            conversation=chat, role="user", selected_version=True
+        )
+        partial = await Message.objects.aget(parent=new)
+        self.assertEqual(
+            (partial.status, partial.content, partial.reserved_tokens),
+            ("cancelled", "partial revision", 0),
+        )
+        self.assertEqual(
+            (await Message.objects.aget(parent=original)).content, "original answer"
+        )
+        self.assertEqual(new.content, "edited")
+
     async def test_disconnect_during_reasoning_persists_partial_without_inventing_usage(
         self,
     ):

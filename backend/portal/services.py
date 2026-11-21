@@ -11,8 +11,10 @@ from django.core.exceptions import ValidationError as ConfigurationError
 from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from django.shortcuts import get_object_or_404
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
+from .branches import BranchState, RequestConflict, UNSPECIFIED
 from .models import Account, Conversation, LanguageModel, Message, ModelUsage
 from .capabilities import runtime_model, validate_reasoning_overrides
 from .thinking import validate_capabilities
@@ -23,10 +25,6 @@ log = logging.getLogger(__name__)
 LEASE = timedelta(seconds=120)
 TURN_DEADLINE = timedelta(minutes=10)
 EXPIRED = "مهلت درخواست به پایان رسید. دوباره تلاش کنید."
-
-
-class RequestConflict(ValidationError):
-    status_code = 409
 
 
 @dataclass
@@ -159,7 +157,7 @@ def _origin(model):
     return hashlib.sha256(repr(target).encode()).hexdigest()
 
 
-def _admission_plan(chat, models, content, thinking, reasoning):
+def _admission_plan(chat, models, content, thinking, reasoning, history_ids):
     plans = []
     for configured in models:
         try:
@@ -201,7 +199,7 @@ def _admission_plan(chat, models, content, thinking, reasoning):
         bound = model.framing_tokens
         available = model.context_window - model.max_output_tokens
         prior = chat.messages.filter(
-            role="assistant", status="completed", model=model, parent__isnull=False
+            role="assistant", status="completed", model=model, parent_id__in=history_ids
         ).order_by("id")
         fields = ["parent__content", "content"]
         if origin:
@@ -243,25 +241,13 @@ def reserve_turn(
     user,
     conversation,
     content,
-    model_ids,
+    model_ids=None,
     request_id=None,
     thinking=None,
     reasoning=None,
+    edit_of=None,
+    expected_leaf=UNSPECIFIED,
 ):
-    thinking = {} if thinking is None else thinking
-    if not isinstance(thinking, dict) or set(thinking) - {str(pk) for pk in model_ids}:
-        raise ValidationError("تنظیم Thinking فقط برای مدل‌های انتخاب‌شده مجاز است.")
-    reasoning = {} if reasoning is None else reasoning
-    if (
-        not isinstance(reasoning, dict)
-        or set(reasoning) - {str(pk) for pk in model_ids}
-        or set(reasoning).intersection(thinking)
-    ):
-        raise ValidationError(
-            "تنظیم استدلال باید برای هر مدل انتخاب‌شده فقط یک‌بار ارسال شود."
-        )
-    if not 1 <= len(model_ids) <= 3 or len(set(model_ids)) != len(model_ids):
-        raise ValidationError("یک تا سه مدل متفاوت انتخاب کنید.")
     with transaction.atomic():
         account = _locked_account(user.pk)
         if not get_user_model().objects.filter(pk=user.pk, is_active=True).exists():
@@ -284,6 +270,48 @@ def reserve_turn(
             )
         if chat.messages.filter(role="user", status="running").exists():
             raise RequestConflict("در این گفتگو درخواستی در حال پردازش است.")
+        branch = BranchState(chat)
+        branch.check_leaf(expected_leaf)
+        history_ids = branch.path
+        if edit_of is not None:
+            history_ids = branch.prefix(edit_of)
+            replies = list(
+                chat.messages.filter(parent_id=edit_of, role="assistant")
+                .only("model_id", "thinking_level", "reasoning_settings")
+                .order_by("pk")
+            )
+            if model_ids is None:
+                model_ids = [r.model_id for r in replies if r.model_id is not None]
+            thinking, reasoning = dict(thinking or {}), dict(reasoning or {})
+            for r in replies:
+                key = str(r.model_id)
+                if (
+                    r.model_id in model_ids
+                    and key not in reasoning
+                    and key not in thinking
+                ):
+                    if r.thinking_level and not r.reasoning_settings:
+                        thinking[key] = r.thinking_level
+                    else:
+                        reasoning[key] = r.reasoning_settings
+        if model_ids is None:
+            raise ValidationError("مدل‌های این درخواست را انتخاب کنید.")
+        thinking = {} if thinking is None else thinking
+        if not isinstance(thinking, dict) or set(thinking) - {
+            str(pk) for pk in model_ids
+        }:
+            raise ValidationError("تنظیم Thinking فقط برای مدل‌های انتخاب‌شده مجاز است.")
+        reasoning = {} if reasoning is None else reasoning
+        if (
+            not isinstance(reasoning, dict)
+            or set(reasoning) - {str(pk) for pk in model_ids}
+            or set(reasoning).intersection(thinking)
+        ):
+            raise ValidationError(
+                "تنظیم استدلال باید برای هر مدل انتخاب‌شده فقط یک‌بار ارسال شود."
+            )
+        if not 1 <= len(model_ids) <= 3 or len(set(model_ids)) != len(model_ids):
+            raise ValidationError("یک تا سه مدل متفاوت انتخاب کنید.")
         models = list(
             LanguageModel.objects.filter(pk__in=model_ids, enabled=True)
             .select_related("connection")
@@ -291,7 +319,7 @@ def reserve_turn(
         )
         if len(models) != len(model_ids):
             raise ValidationError("یکی از مدل‌ها موجود یا فعال نیست.")
-        plans = _admission_plan(chat, models, content, thinking, reasoning)
+        plans = _admission_plan(chat, models, content, thinking, reasoning, history_ids)
         open_holds = (
             Message.objects.filter(
                 conversation__user=user, role="assistant", status="running"
@@ -303,7 +331,11 @@ def reserve_turn(
             > account.token_limit
         ):
             raise ValidationError("سهمیهٔ باقی‌مانده برای این درخواست کافی نیست.")
+        if edit_of is not None:
+            chat.messages.filter(pk=edit_of).update(selected_version=False)
         turn = Message.objects.create(
+            previous_turn_id=history_ids[-1] if history_ids else None,
+            selected_version=True,
             conversation=chat,
             role="user",
             content=content,
@@ -327,6 +359,28 @@ def reserve_turn(
             )
             jobs.append(Job(reply, model, messages))
         return turn, jobs
+
+
+@transaction.atomic
+def select_version(user, conversation, anchor, target, expected_leaf):
+    _locked_account(user.pk)
+    _expire_locked(user.pk, timezone.now())
+    chat = get_object_or_404(
+        Conversation.objects.select_for_update(),
+        user=user,
+        pk=conversation.pk,
+        created_at__gte=timezone.now() - timedelta(days=30),
+    )
+    if chat.messages.filter(role="user", status="running").exists():
+        raise RequestConflict("تا پایان پاسخ یا توقف آن، تغییر نسخه ممکن نیست.")
+    branch = BranchState(chat)
+    branch.check_leaf(expected_leaf)
+    branch.prefix(anchor)
+    if target not in branch.versions(anchor):
+        raise NotFound("نسخهٔ انتخاب‌شده متعلق به این نوبت نیست.")
+    if anchor != target:
+        chat.messages.filter(pk=anchor).update(selected_version=False)
+        chat.messages.filter(pk=target).update(selected_version=True)
 
 
 def _usage(reply, text, reasoning_bytes, usage):

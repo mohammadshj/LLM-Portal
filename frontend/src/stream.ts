@@ -32,8 +32,10 @@ export async function streamChat(
   conversation: number,
   body: {
     content: string;
-    model_ids: number[];
-    reasoning: Record<number, ReasoningSettings>;
+    model_ids?: number[];
+    edit_of?: number;
+    expected_leaf?: number | null;
+    reasoning?: Record<number, ReasoningSettings>;
     request_id: string;
   },
   signal: AbortSignal,

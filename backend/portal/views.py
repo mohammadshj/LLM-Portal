@@ -2,7 +2,8 @@ import json
 from datetime import timedelta
 
 from django.contrib.auth import authenticate, login, logout
-from django.db.models import Exists, OuterRef, Sum
+from django.db import transaction
+from django.db.models import Q, Exists, OuterRef, Sum
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
 from django.shortcuts import get_object_or_404
@@ -15,15 +16,17 @@ from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .branches import BranchState, UNSPECIFIED
 from .models import Account, Conversation, LanguageModel, Message, ModelUsage
 from .permissions import IsPortalAdmin, is_portal_admin
 from .serializers import (
+    BranchSelectionSerializer,
     ConversationSerializer,
     MessageSerializer,
     ModelSerializer,
     SendSerializer,
 )
-from .services import delete_conversation, request_cancel, reserve_turn
+from .services import delete_conversation, request_cancel, reserve_turn, select_version
 from .streaming import EventStreamResponse, TurnStream, send_message
 
 
@@ -171,7 +174,25 @@ def conversation_detail(request, pk):
         serializer = SendSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         errors = send_message(request.user, conversation, **serializer.validated_data)
-    messages = list(conversation.messages.select_related("model"))
+    return branch_detail(conversation, errors)
+
+
+@transaction.atomic
+def branch_detail(conversation, errors=()):
+    # One consistent selection even when another tab switches branches mid-read.
+    chat = get_object_or_404(
+        Conversation.objects.select_for_update(),
+        pk=conversation.pk,
+        user_id=conversation.user_id,
+    )
+    branch = BranchState(chat)
+    messages = list(
+        chat.messages.filter(
+            Q(pk__in=branch.path)
+            | Q(parent_id__in=branch.path)
+            | Q(role="assistant", parent__isnull=True)
+        ).select_related("model")
+    )
     active_request_id = next(
         (
             m.request_id
@@ -184,11 +205,32 @@ def conversation_detail(request, pk):
         {
             "id": conversation.id,
             "active_request_id": active_request_id,
-            "title": conversation.title,
+            "title": chat.title,
+            "active_leaf": branch.leaf,
+            "versions": {pk: branch.versions(pk) for pk in branch.path},
             "messages": MessageSerializer(messages, many=True).data,
             "errors": errors,
         }
     )
+
+
+@api_view(["GET", "POST"])
+def message_versions(request, pk, message_id):
+    chat = owned_conversation(request, pk)
+    if request.method == "GET":
+        return Response({"version_ids": BranchState(chat).versions(message_id)})
+    serializer = BranchSelectionSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    data = serializer.validated_data
+    with transaction.atomic():
+        select_version(
+            request.user,
+            chat,
+            message_id,
+            data["version_id"],
+            data.get("expected_leaf", UNSPECIFIED),
+        )
+        return branch_detail(chat)
 
 
 @api_view(["GET"])

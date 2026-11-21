@@ -257,6 +257,10 @@ def _reasoning(message):
     value = message.get("reasoning_content")
     if value is not None and not isinstance(value, str):
         raise ProviderError("قالب استدلال سرویس معتبر نیست.", code="invalid_reasoning")
+    if not value:
+        alternate = message.get("reasoning")
+        if isinstance(alternate, str):
+            value = alternate
     if message.get("tool_calls") or message.get("function_call"):
         raise ProviderError(
             "این گفتگو از فراخوانی ابزار پشتیبانی نمی‌کند.", code="unsupported_tool"

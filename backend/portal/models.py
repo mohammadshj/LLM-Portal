@@ -8,7 +8,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.utils import timezone
 
-from .capabilities import validate_overrides
+from .capabilities import validate_overrides, validate_reasoning_overrides
 from .thinking import CONTRACTS, POLICIES, validate_capabilities
 from .validators import validate_connection_url, validate_key_env
 
@@ -135,6 +135,7 @@ class LanguageModel(models.Model):
         help_text="برای استفاده از قرارداد و سطح‌های دستی این گزینه را بردارید.",
     )
     discovery_data = models.JSONField(default=dict, editable=False)
+    reasoning_overrides = models.JSONField(default=dict, blank=True)
     capability_overrides = models.JSONField(
         default=dict,
         blank=True,
@@ -180,6 +181,7 @@ class LanguageModel(models.Model):
                 )
         validate_overrides(self.capability_overrides)
         validate_capabilities(self)
+        validate_reasoning_overrides(self)
         if self.provider == "openai" and not self.connection_id:
             raise ValidationError(
                 {"connection": "برای مدل واقعی یک اتصال سرویس انتخاب کنید."}
@@ -223,6 +225,7 @@ class Message(models.Model):
     output_tokens = models.PositiveIntegerField(null=True, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    reasoning_settings = models.JSONField(default=dict, blank=True)
     thinking_level = models.CharField(max_length=32, blank=True)
     reasoning_content = models.TextField(null=True)
     reasoning_origin = models.CharField(max_length=64, blank=True)

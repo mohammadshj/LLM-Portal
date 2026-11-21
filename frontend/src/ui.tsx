@@ -2,24 +2,6 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, Layers3, X } from "lucide-react";
 
 export const number = (value: number) => value.toLocaleString("fa-IR");
-const translatedEfforts: Record<string, string> = {
-  none: "بدون استدلال",
-  minimal: "حداقلی",
-  medium: "متوسط",
-  xhigh: "بسیار زیاد",
-  off: "خاموش",
-  on: "روشن",
-  low: "کم",
-  high: "زیاد",
-  max: "بیشینه",
-};
-
-export function thinkingName(level: string) {
-  return Object.hasOwn(translatedEfforts, level)
-    ? translatedEfforts[level]
-    : level;
-}
-
 export function Brand() {
   return (
     <div className="brand" dir="ltr">

@@ -5,6 +5,11 @@ from .models import Conversation, LanguageModel, Message
 
 
 class ModelSerializer(serializers.ModelSerializer):
+    reasoning_profile = serializers.SerializerMethodField()
+
+    def get_reasoning_profile(self, model):
+        return model.reasoning_profile.public()
+
     reasoning_supported = serializers.BooleanField(read_only=True, allow_null=True)
 
     def to_representation(self, instance):
@@ -21,6 +26,7 @@ class ModelSerializer(serializers.ModelSerializer):
             "thinking_levels",
             "thinking_default",
             "reasoning_supported",
+            "reasoning_profile",
         ]
 
 
@@ -46,6 +52,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "usage_source",
             "elapsed_ms",
             "thinking_level",
+            "reasoning_settings",
             "reasoning_content",
             "reasoning_tokens",
             "total_tokens",
@@ -64,6 +71,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
 
 class SendSerializer(serializers.Serializer):
+    reasoning = serializers.DictField(child=serializers.DictField(), required=False)
     thinking = serializers.DictField(
         child=serializers.RegexField(
             r"\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,31}\Z", max_length=32

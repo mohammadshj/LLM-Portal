@@ -34,7 +34,7 @@ def mock_completion(**kwargs):
 
     mock = Mock(**kwargs)
 
-    async def generate(model, messages):
+    async def generate(model, messages, settings):
         text, incoming, outgoing = await asyncio.to_thread(mock, model, messages)
         yield ProviderEvent("delta", text=text)
         yield ProviderEvent("usage", input_tokens=incoming, output_tokens=outgoing)

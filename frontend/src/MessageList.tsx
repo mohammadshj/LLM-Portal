@@ -15,7 +15,7 @@ import {
   UserRound,
 } from "lucide-react";
 import type { Message } from "./types";
-import { CopyButton, Dialog, number, thinkingName } from "./ui";
+import { CopyButton, Dialog, number } from "./ui";
 import { ResponseTime } from "./ResponseTime";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
@@ -56,7 +56,9 @@ function TokenUsage({ m }: { m: Message }) {
           <dd>{amount("out", m.output_tokens)}</dd>
           <dt>مجموع</dt>
           <dd>{amount("total", m.total_tokens)}</dd>
-          {(m.thinking_level || m.reasoning_tokens != null) && (
+          {(m.thinking_level ||
+            Object.keys(m.reasoning_settings ?? {}).length > 0 ||
+            m.reasoning_tokens != null) && (
             <>
               <dt>سهم استدلال</dt>
               <dd>
@@ -84,7 +86,11 @@ function ResponseBody({ m }: { m: Message }) {
         >
           <summary>
             <Activity /> فرایند استدلال مدل{" "}
-            {m.thinking_level && "· " + thinkingName(m.thinking_level)}
+            {(m.reasoning_settings?.effort || m.thinking_level) && (
+              <bdi>{m.reasoning_settings?.effort || m.thinking_level}</bdi>
+            )}
+            {m.reasoning_settings?.budget != null &&
+              " · " + number(m.reasoning_settings.budget) + " توکن"}
           </summary>
           <p dir="auto">{m.reasoning_content}</p>
         </details>

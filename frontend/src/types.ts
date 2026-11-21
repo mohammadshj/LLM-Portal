@@ -4,7 +4,42 @@ export type User = {
   token_limit: number;
   tokens_used: number;
 };
+export type ReasoningSettings = {
+  toggle?: boolean;
+  effort?: string;
+  budget?: number;
+};
+export type ReasoningControl = {
+  type: keyof ReasoningSettings;
+  default_source?: string;
+  required: boolean;
+  default?: boolean | string | number;
+  options?: {
+    value: string | boolean | number;
+    label?: string;
+    semantic_level?: string;
+    disables_reasoning?: boolean;
+  }[];
+  min?: number;
+  max?: number;
+};
+export type ReasoningProfile = {
+  available: boolean;
+  supported: boolean | null;
+  mandatory: boolean | null;
+  mode:
+    | "unknown"
+    | "none"
+    | "fixed"
+    | "toggle"
+    | "effort"
+    | "budget"
+    | "combined";
+  controls: ReasoningControl[];
+  exclusive: (keyof ReasoningSettings)[];
+};
 export type Model = {
+  reasoning_profile: ReasoningProfile;
   id: number;
   name: string;
   provider: string;
@@ -30,6 +65,7 @@ export type Message = {
   error?: string;
   reasoning_content?: string | null;
   thinking_level?: string;
+  reasoning_settings?: ReasoningSettings;
   elapsed_ms?: number | null;
   // Local monotonic timestamp for the latest running elapsed_ms snapshot.
   elapsedSampleAt?: number;

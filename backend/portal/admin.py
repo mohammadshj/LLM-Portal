@@ -10,7 +10,8 @@ from django.shortcuts import get_object_or_404, redirect
 from django.urls import path
 from django.utils.html import format_html, format_html_join
 
-from .capabilities import FLAGS, LIMITS, resolve
+from .capabilities import FLAGS, LIMITS, resolve, runtime_model, reasoning_evidence
+from .reasoning_admin import CatalogModelForm, TITLES
 from .discovery import sync_models
 from .discovery_http import DiscoveryError, ERRORS
 from .models import Account, LanguageModel, Message, ModelConnection
@@ -106,24 +107,13 @@ class AccountAdmin(admin.ModelAdmin):
         obj.save(update_fields=["token_limit"])
 
 
-class CatalogModelForm(forms.ModelForm):
-    def clean(self):
-        data = super().clean()
-        for key, fallback in (
-            ("thinking_levels", []),
-            ("thinking_budgets", {}),
-            ("capability_overrides", {}),
-        ):
-            if data.get(key) is None:
-                data[key] = fallback
-        return data
-
-
 class CatalogAdmin(admin.ModelAdmin):
     def save_model(self, request, obj, form, change):
         # Do not write a stale catalog snapshot back when an operator edits another field.
         if change:
-            fields = list(form.changed_data)
+            fields = [f.name for f in obj._meta.fields if f.name in form.changed_data]
+            if getattr(form, "override_changed", False):
+                fields.append("reasoning_overrides")
             if (
                 isinstance(obj, LanguageModel)
                 and obj.legacy_alias
@@ -143,7 +133,102 @@ class LanguageModelAdmin(CatalogAdmin):
     list_filter = ["provider", "connection", "enabled", "auto_thinking"]
     search_fields = ["name", "model_id"]
     autocomplete_fields = ["connection"]
-    readonly_fields = ["effective_capabilities", "discovery_data"]
+    readonly_fields = ["effective_capabilities", "discovery_data", "profile_summary"]
+    fieldsets = [
+        (None, {"fields": ["name", "provider", "connection", "model_id", "enabled"]}),
+        (
+            "تنظیم استدلال (Reasoning Configuration)",
+            {
+                "fields": [
+                    "auto_thinking",
+                    "profile_summary",
+                    "reasoning_policy",
+                    "pin",
+                    "reasoning",
+                    "wire",
+                    "reasoning_mandatory",
+                    "reasoning_toggle",
+                    "default_enabled",
+                    "efforts",
+                    "custom_efforts",
+                    "default_effort",
+                    "effort_required",
+                    "toggle_required",
+                    "budget_required",
+                    "budget_min",
+                    "budget_max",
+                    "budget_presets",
+                    "default_budget",
+                ]
+            },
+        ),
+        (
+            "بودجه و پروتکل گفتگو",
+            {
+                "fields": [
+                    "context_window",
+                    "max_output_tokens",
+                    "provider_output_limit",
+                    "output_parameter",
+                    "stream_usage_option",
+                    "tokenizer_name",
+                    "framing_tokens",
+                ]
+            },
+        ),
+        (
+            "تنظیمات سازگاری قدیمی",
+            {
+                "classes": ["collapse"],
+                "fields": [
+                    "thinking_contract",
+                    "thinking_levels",
+                    "thinking_default",
+                    "thinking_budgets",
+                ],
+            },
+        ),
+        (
+            "جزئیات فنی کشف",
+            {
+                "classes": ["collapse"],
+                "fields": [
+                    "effective_capabilities",
+                    "capability_overrides",
+                    "discovery_data",
+                ],
+            },
+        ),
+    ]
+
+    @admin.display(description="پروفایل مؤثر، منبع و تعارض‌ها")
+    def profile_summary(self, obj):
+        if not obj or not obj.pk:
+            return "پس از ثبت مدل یا همگام‌سازی، پروفایل اینجا نمایش داده می‌شود."
+        profile = runtime_model(obj).reasoning_profile.public()
+        rows = []
+        for key, item in reasoning_evidence(obj, TITLES).items():
+            competing = " · ".join(
+                f"{name}: {value}" for name, value in item["conflicts"].items()
+            )
+            rows.append(
+                (
+                    TITLES[key],
+                    item["value"],
+                    item["source"],
+                    item["verification"],
+                    competing or "—",
+                )
+            )
+        table = format_html_join(
+            "", "<tr><th>{}</th><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", rows
+        )
+        return format_html(
+            "<p>{} · {}</p><table><tr><th>قابلیت</th><th>مقدار</th><th>منبع</th><th>وضعیت تأیید</th><th>دادهٔ متفاوت کاتالوگ</th></tr>{}</table>",
+            profile["mode"],
+            ", ".join(c["type"] for c in profile["controls"]),
+            table,
+        )
 
     @admin.display(description="قابلیت مؤثر و منبع اطلاعات")
     def effective_capabilities(self, obj):

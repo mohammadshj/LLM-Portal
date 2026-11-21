@@ -5,7 +5,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
 
-from .capabilities import registry_facts
+from .catalog_metadata import registry_facts
 from .discovery_http import DiscoveryError, read_json
 from .models import RegistrySnapshot
 

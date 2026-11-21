@@ -1,4 +1,4 @@
-import type { Message } from "./types";
+import type { Message, ReasoningSettings } from "./types";
 import { request } from "./api";
 
 export type ChatEvent = {
@@ -33,7 +33,7 @@ export async function streamChat(
   body: {
     content: string;
     model_ids: number[];
-    thinking: Record<number, string>;
+    reasoning: Record<number, ReasoningSettings>;
     request_id: string;
   },
   signal: AbortSignal,

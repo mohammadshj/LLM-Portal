@@ -14,8 +14,9 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from .models import Account, Conversation, LanguageModel, Message, ModelUsage
-from .capabilities import runtime_model
+from .capabilities import runtime_model, validate_reasoning_overrides
 from .thinking import validate_capabilities
+from .reasoning_profiles import legacy_selection
 from .tokens import Usage, input_counter
 
 log = logging.getLogger(__name__)
@@ -33,7 +34,6 @@ class Job:
     reply: Message
     model: LanguageModel
     messages: list
-    thinking_level: str = ""
 
 
 def _locked_account(user_id):
@@ -159,23 +159,40 @@ def _origin(model):
     return hashlib.sha256(repr(target).encode()).hexdigest()
 
 
-def _admission_plan(chat, models, content, thinking):
+def _admission_plan(chat, models, content, thinking, reasoning):
     plans = []
     for configured in models:
-        model = runtime_model(configured)
-        if not model.can_chat:
-            raise ValidationError("این مدل از تولید متن پشتیبانی نمی‌کند.")
         try:
             validate_capabilities(configured)
-            validate_capabilities(model)
+            validate_reasoning_overrides(configured)
+            model = runtime_model(configured)
+            if not model.can_chat:
+                raise ValidationError("این مدل از تولید متن پشتیبانی نمی‌کند.")
+            if (
+                model.reasoning_profile.wire == "kimi_preserved"
+                and model.reasoning_policy != "preserve"
+            ):
+                raise ConfigurationError("سیاست تاریخچهٔ Kimi معتبر نیست.")
         except ConfigurationError:
             raise ValidationError(
                 "تنظیمات Thinking یا سقف خروجی مدل معتبر نیست."
             ) from None
         key = str(model.pk)
         level = thinking.get(key, model.thinking_default)
-        if key in thinking and level not in model.thinking_levels:
-            raise ValidationError("سطح Thinking انتخاب‌شده برای این مدل مجاز نیست.")
+        profile = model.reasoning_profile
+        try:
+            if key in reasoning:
+                settings = reasoning[key]
+                level = ""
+            elif key in thinking or (
+                level and not model.auto_thinking and not model.reasoning_overrides
+            ):
+                settings = legacy_selection(model, level)
+            else:
+                settings = profile.defaults()
+            profile.payload(settings)
+        except ConfigurationError as exc:
+            raise ValidationError(exc.messages) from None
         if model.reasoning_policy == "preserve" and model.connection is None:
             raise ValidationError("تنظیمات اتصال مدل کامل نیست.")
         origin = _origin(model)
@@ -218,16 +235,31 @@ def _admission_plan(chat, models, content, thinking):
             raise ValidationError(
                 "ظرفیت گفتگو برای مدل انتخابی کافی نیست؛ گفتگوی تازه بسازید."
             )
-        plans.append((model, messages, bound, hold, level, origin))
+        plans.append((model, messages, bound, hold, level, origin, settings))
     return plans
 
 
 def reserve_turn(
-    user, conversation, content, model_ids, request_id=None, thinking=None
+    user,
+    conversation,
+    content,
+    model_ids,
+    request_id=None,
+    thinking=None,
+    reasoning=None,
 ):
     thinking = {} if thinking is None else thinking
     if not isinstance(thinking, dict) or set(thinking) - {str(pk) for pk in model_ids}:
         raise ValidationError("تنظیم Thinking فقط برای مدل‌های انتخاب‌شده مجاز است.")
+    reasoning = {} if reasoning is None else reasoning
+    if (
+        not isinstance(reasoning, dict)
+        or set(reasoning) - {str(pk) for pk in model_ids}
+        or set(reasoning).intersection(thinking)
+    ):
+        raise ValidationError(
+            "تنظیم استدلال باید برای هر مدل انتخاب‌شده فقط یک‌بار ارسال شود."
+        )
     if not 1 <= len(model_ids) <= 3 or len(set(model_ids)) != len(model_ids):
         raise ValidationError("یک تا سه مدل متفاوت انتخاب کنید.")
     with transaction.atomic():
@@ -259,7 +291,7 @@ def reserve_turn(
         )
         if len(models) != len(model_ids):
             raise ValidationError("یکی از مدل‌ها موجود یا فعال نیست.")
-        plans = _admission_plan(chat, models, content, thinking)
+        plans = _admission_plan(chat, models, content, thinking, reasoning)
         open_holds = (
             Message.objects.filter(
                 conversation__user=user, role="assistant", status="running"
@@ -280,7 +312,7 @@ def reserve_turn(
             lease_until=timezone.now() + LEASE,
         )
         jobs = []
-        for model, messages, bound, hold, level, origin in plans:
+        for model, messages, bound, hold, level, origin, settings in plans:
             reply = Message.objects.create(
                 conversation=chat,
                 role="assistant",
@@ -290,9 +322,10 @@ def reserve_turn(
                 input_bound=bound,
                 reserved_tokens=hold,
                 thinking_level=level,
+                reasoning_settings=settings,
                 reasoning_origin=origin,
             )
-            jobs.append(Job(reply, model, messages, level))
+            jobs.append(Job(reply, model, messages))
         return turn, jobs
 
 

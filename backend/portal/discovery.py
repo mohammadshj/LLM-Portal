@@ -8,7 +8,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import registry
-from .capabilities import connection_signature, provider_facts
+from .capabilities import connection_signature
+from .catalog_metadata import provider_facts
 from .discovery_http import DiscoveryError, credential, read_json
 from .models import LanguageModel, ModelConnection
 
@@ -22,6 +23,14 @@ def clean_text(value, limit):
         and value.strip() == value
         and value.isprintable()
     )
+
+
+def contains_credential(value, key):
+    if isinstance(value, dict):
+        return any(key in k or contains_credential(v, key) for k, v in value.items())
+    if isinstance(value, list):
+        return any(contains_credential(v, key) for v in value)
+    return isinstance(value, str) and key in value
 
 
 def listing(connection):
@@ -72,10 +81,7 @@ def listing(connection):
         if not clean_text(name, 100) or (key and key in name):
             name = ident[:100]
         facts = provider_facts(row, kind)
-        if key and any(
-            key in v
-            for v in facts.get("efforts", []) + [facts.get("default_effort", "")]
-        ):
+        if key and contains_credential(facts, key):
             errors.append({"row": index, "code": "invalid_metadata"})
             continue
         entries[ident] = (name, facts, index)
@@ -145,7 +151,11 @@ def sync_models(pk):
                     "managed_name": managed_name,
                     "connection": signature,
                     "provider": provider,
-                    "registry": catalog.get(ident, {}),
+                    "registry": old.get("registry", {})
+                    if cache == "unavailable"
+                    and old.get("connection") == signature
+                    and old.get("model_id") == ident
+                    else catalog.get(ident, {}),
                 }
                 if old == data:
                     unchanged += 1

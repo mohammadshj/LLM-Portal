@@ -45,6 +45,27 @@ class Provider(BaseHTTPRequestHandler):
                     }
                 ],
             },
+            {
+                "id": "range",
+                "name": prefix + " range",
+                "supported_parameters": [
+                    {"name": "thinking.type", "options": ["enabled"]},
+                    {"name": "thinking.budget_tokens", "min": 32, "max": 256},
+                ],
+            },
+            {
+                "id": "fixed",
+                "name": prefix + " fixed",
+                "capabilities": {"reasoning": True},
+                "reasoning_mandatory": True,
+                "reasoning_contract": "always",
+            },
+            {
+                "id": "toggle",
+                "name": prefix + " toggle",
+                "reasoning_options": [{"type": "toggle"}],
+                "reasoning_contract": "toggle",
+            },
             {"id": "unknown", "name": prefix + " unknown"},
         ]
         body = json.dumps({"data": rows}).encode()
@@ -65,7 +86,12 @@ class Provider(BaseHTTPRequestHandler):
         task = f"{chat}/{model}"
         effort = request.get("reasoning_effort")
         off = request.get("thinking") == {"type": "disabled"}
-        notify(event="started", task=task, level="off" if off else effort)
+        notify(
+            event="started",
+            task=task,
+            level="off" if off else effort,
+            budget=request.get("thinking", {}).get("budget_tokens"),
+        )
         if model == "failure":
             # Delay the HTTP error so a successful sibling visibly streams first.
             with condition:

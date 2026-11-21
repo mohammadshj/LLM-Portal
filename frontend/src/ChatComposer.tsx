@@ -9,15 +9,17 @@ import {
   Square,
   X,
 } from "lucide-react";
-import type { Model } from "./types";
-import { Dialog, number, thinkingName, useMedia } from "./ui";
+import { ReasoningControls } from "./ReasoningControls";
+import { ready } from "./reasoning";
+import type { Model, ReasoningSettings } from "./types";
+import { Dialog, number, useMedia } from "./ui";
 
 type SelectorProps = {
   models: Model[];
   selected: number[];
-  thinking?: Record<number, string>;
+  thinking?: Record<number, ReasoningSettings>;
   choose: (ids: number[]) => void;
-  setThinking: (id: number, level: string) => void;
+  setThinking: (id: number, values: ReasoningSettings) => void;
 };
 function ModelSelector({
   models,
@@ -32,7 +34,9 @@ function ModelSelector({
     m.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
   );
   const advanced = models.filter(
-    (m) => selected.includes(m.id) && m.thinking_levels.length,
+    (m) =>
+      selected.includes(m.id) &&
+      (m.reasoning_profile.controls.length || m.reasoning_profile.mandatory),
   );
   return (
     <Dialog title="انتخاب مدل‌ها" onClose={close}>
@@ -78,7 +82,8 @@ function ModelSelector({
                 ) : m.reasoning_supported === null ? (
                   <small>استدلال نامعلوم</small>
                 ) : m.reasoning_supported === true &&
-                  !m.thinking_levels.length ? (
+                  !m.reasoning_profile.controls.length &&
+                  m.reasoning_profile.mode !== "fixed" ? (
                   <small>سطح قابل ارسال مشخص نشده</small>
                 ) : null}
               </label>
@@ -95,22 +100,12 @@ function ModelSelector({
               سطح بالاتر می‌تواند زمان پاسخ و مصرف توکن را افزایش دهد.
             </p>
             {advanced.map((m) => (
-              <label className="setting" key={m.id}>
-                شدت استدلال <bdi>{m.name}</bdi>
-                <select
-                  value={thinking?.[m.id] ?? m.thinking_default}
-                  onChange={(e) => setThinking(m.id, e.target.value)}
-                >
-                  {!m.thinking_default && (
-                    <option value="">پیش‌فرض سرویس</option>
-                  )}
-                  {m.thinking_levels.map((level) => (
-                    <option value={level} key={level}>
-                      {thinkingName(level)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ReasoningControls
+                key={m.id}
+                model={m}
+                saved={thinking?.[m.id]}
+                change={(v) => setThinking(m.id, v)}
+              />
             ))}
           </details>
         )}
@@ -148,12 +143,16 @@ export function ChatComposer(
     text.current.style.height = "auto";
     text.current.style.height = Math.min(text.current.scrollHeight, 152) + "px";
   }, [prompt]);
+  const reasoningReady = models
+    .filter((m) => selected.includes(m.id))
+    .every((m) => ready(m.reasoning_profile, props.thinking?.[m.id]));
   const canSend =
     !processing &&
     !locked &&
     !!prompt.trim() &&
     !!selected.length &&
-    !props.exhausted;
+    !props.exhausted &&
+    reasoningReady;
   return (
     <section className="composer-area">
       <form
@@ -257,9 +256,11 @@ export function ChatComposer(
             ? "مدل فعالی در دسترس نیست. با مدیر سامانه تماس بگیرید."
             : processing
               ? "پاسخ در حال دریافت است. می‌توانید گفتگوی دیگری را باز کنید."
-              : !selected.length && models.length
-                ? "برای ارسال، یک مدل انتخاب کنید."
-                : "تاریخچهٔ گفتگو تا ۳۰ روز نگهداری می‌شود."}
+              : !reasoningReady
+                ? "تنظیمات استدلال مدل انتخابی را بررسی کنید."
+                : !selected.length && models.length
+                  ? "برای ارسال، یک مدل انتخاب کنید."
+                  : "تاریخچهٔ گفتگو تا ۳۰ روز نگهداری می‌شود."}
         <span>
           {prompt.length > 10000
             ? number(prompt.length) + " / ۱۲٬۰۰۰"

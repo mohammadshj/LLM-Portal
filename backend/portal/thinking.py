@@ -78,7 +78,10 @@ def validate_capabilities(model):
             }
         )
     if model.reasoning_policy not in dict(POLICIES) or (
-        not levels and not model.auto_thinking and model.reasoning_policy != "hidden"
+        not levels
+        and not model.auto_thinking
+        and not model.reasoning_overrides
+        and model.reasoning_policy != "hidden"
     ):
         raise ValidationError(
             {"reasoning_policy": "سیاست استدلال با قابلیت مدل سازگار نیست."}
@@ -93,19 +96,7 @@ def validate_capabilities(model):
 
 
 def parameters(contract, level, budgets=None):
-    if not level or contract == "always":
-        return {}
-    if contract == "native_effort":
-        return {"reasoning_effort": level}
-    if contract == "router_effort":
-        return {"reasoning": {"effort": level}}
-    if contract == "budget_tokens":
-        return {"thinking": {"type": "enabled", "budget_tokens": budgets[level]}}
-    if contract == "kimi_preserved":
-        return {"thinking": {"type": "enabled", "effort": level, "keep": "all"}}
-    payload = {}
-    if contract in ("toggle", "toggle_effort"):
-        payload["thinking"] = {"type": "disabled" if level == "off" else "enabled"}
-    if contract in ("effort", "toggle_effort") and level != "off":
-        payload["reasoning_effort"] = level
-    return payload
+    """Compatibility API for callers with an already validated scalar level."""
+    from .reasoning_contracts import WIRE, scalar_values
+
+    return WIRE[contract].encode(scalar_values(contract, level, budgets or {}))

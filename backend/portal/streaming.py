@@ -54,11 +54,7 @@ class TurnStream:
 
     async def read_provider(self, job, progress):
         # All reads and aclose() for one HTTP response run in the same task.
-        stream = (
-            stream_complete(job.model, job.messages, job.thinking_level)
-            if job.thinking_level
-            else stream_complete(job.model, job.messages)
-        )
+        stream = stream_complete(job.model, job.messages, job.reply.reasoning_settings)
         async with aclosing(stream) as source:
             async for event in source:
                 if event.kind in ("delta", "reasoning_delta"):
@@ -263,11 +259,17 @@ class EventStreamResponse(StreamingHttpResponse):
 
 
 def send_message(
-    user, conversation, content, model_ids, request_id=None, thinking=None
+    user,
+    conversation,
+    content,
+    model_ids,
+    request_id=None,
+    thinking=None,
+    reasoning=None,
 ):
     """Original JSON API, using the same cancellation, deadlines and accounting as SSE."""
     turn, jobs = reserve_turn(
-        user, conversation, content, model_ids, request_id, thinking
+        user, conversation, content, model_ids, request_id, thinking, reasoning
     )
     for job in jobs:
         if job.model.connection is not None:

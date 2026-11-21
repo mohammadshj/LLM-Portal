@@ -158,7 +158,7 @@ class StreamHTTPTests(TransactionTestCase):
         chat = self.chats[0]
         closed = asyncio.Event()
 
-        async def provider(model, messages):
+        async def provider(model, messages, settings):
             try:
                 yield ProviderEvent("usage", input_tokens=8, output_tokens=3)
                 yield ProviderEvent("delta", text="بخش اول")
@@ -199,7 +199,7 @@ class StreamHTTPTests(TransactionTestCase):
         gates = {chat.title: asyncio.Event() for chat in self.chats}
         closed = {chat.title: asyncio.Event() for chat in self.chats}
 
-        async def provider(model, messages):
+        async def provider(model, messages, settings):
             title = messages[-1]["content"]
             try:
                 yield ProviderEvent(kind="delta", text=f"{title}...")
@@ -261,7 +261,7 @@ class StreamHTTPTests(TransactionTestCase):
         payload = self.payload(chat)
         contexts = []
 
-        async def unreliable_provider(selected, messages):
+        async def unreliable_provider(selected, messages, settings):
             contexts.append(messages)
             if len(contexts) == 1:
                 raise ProviderError("خطای سرویس", code="http_503", status=503)
@@ -300,7 +300,7 @@ class StreamHTTPTests(TransactionTestCase):
     async def test_http_disconnect_closes_upstream_and_releases_partial_reply(self):
         closed = asyncio.Event()
 
-        async def stalled(model, messages):
+        async def stalled(model, messages, settings):
             try:
                 yield ProviderEvent(kind="delta", text="متن اولیه")
                 await asyncio.Event().wait()
@@ -335,8 +335,8 @@ class StreamHTTPTests(TransactionTestCase):
         await model.asave()
         closed = asyncio.Event()
 
-        async def stalled(selected, messages, level):
-            self.assertEqual(level, "on")
+        async def stalled(selected, messages, settings):
+            self.assertEqual(settings, {})  # Always enabled, no user controls.
             try:
                 yield ProviderEvent("reasoning_delta", text="نیمه")
                 await asyncio.Event().wait()
@@ -370,7 +370,7 @@ class StreamHTTPTests(TransactionTestCase):
         started = {model.pk: asyncio.Event() for model in self.models}
         gates = {model.pk: asyncio.Event() for model in self.models}
 
-        async def provider(model, messages):
+        async def provider(model, messages, settings):
             started[model.pk].set()
             await gates[model.pk].wait()
             yield ProviderEvent(kind="delta", text=model.name)

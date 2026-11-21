@@ -1450,3 +1450,22 @@ dialog::backdrop {
     scroll-behavior: auto !important;
   }
 }
+
+.reasoning-controls {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: 8px 0;
+  min-width: 0;
+  padding: 6px 12px;
+}
+.reasoning-controls legend {
+  padding-inline: 4px;
+}
+
+.budget-range {
+  flex-wrap: wrap;
+}
+.budget-range input {
+  width: 100%;
+  min-width: 0;
+}

@@ -292,6 +292,7 @@ class ConnectionTests(TestCase):
                 "thinking_levels",
                 "thinking_default",
                 "reasoning_supported",
+                "reasoning_profile",
             },
         )
 

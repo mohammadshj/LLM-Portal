@@ -1,14 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { ready, selectionFor } from "./reasoning";
 import { streamChat } from "./stream";
 import type { ChatEvent } from "./stream";
-import type { Conversation, Detail, Message, Model } from "./types";
+import type {
+  Conversation,
+  Detail,
+  Message,
+  Model,
+  ReasoningSettings,
+} from "./types";
 
 type LiveTurn = { id: string; messages: Message[]; stopping: boolean };
 type Chat = {
   prompt: string;
   selection?: number[];
-  thinking?: Record<number, string>;
+  thinking?: Record<number, ReasoningSettings>;
   detail?: Detail;
   live?: LiveTurn;
   error?: string;
@@ -188,6 +195,9 @@ export function useChats(
     if (
       !content ||
       !selected.length ||
+      selected.some(
+        (m) => !ready(m.reasoning_profile, state.thinking?.[m.id]),
+      ) ||
       state.removing ||
       state.loading ||
       state.detail?.active_request_id ||
@@ -209,11 +219,12 @@ export function useChats(
       output_tokens: 0,
       usage_source: "none" as const,
     };
-    const thinking: Record<number, string> = {};
-    for (const model of selected) {
-      const effort = state.thinking?.[model.id] ?? model.thinking_default;
-      if (effort && model.thinking_levels?.includes(effort))
-        thinking[model.id] = effort;
+    const reasoning: Record<number, ReasoningSettings> = {};
+    for (const m of selected) {
+      reasoning[m.id] = selectionFor(
+        m.reasoning_profile,
+        state.thinking?.[m.id],
+      );
     }
     const sentAt = performance.now();
     const messages: Message[] = [
@@ -224,7 +235,7 @@ export function useChats(
         role: "assistant" as const,
         content: "",
         model_name: m.name,
-        thinking_level: thinking[m.id],
+        reasoning_settings: reasoning[m.id],
         model_id: m.id,
         status: "running" as const,
         elapsed_ms: 0,
@@ -265,7 +276,7 @@ export function useChats(
         {
           content,
           model_ids: selected.map((m) => m.id),
-          thinking,
+          reasoning,
           request_id: run.id,
         },
         run.controller.signal,
@@ -426,7 +437,7 @@ export function useChats(
       void load(id);
     },
     setPrompt: (prompt: string) => edit(activeId, (c) => ({ ...c, prompt })),
-    setThinking: (id: number, level: string) =>
+    setThinking: (id: number, level: ReasoningSettings) =>
       edit(activeId, (c) => ({
         ...c,
         thinking: { ...c.thinking, [id]: level },

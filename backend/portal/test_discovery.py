@@ -700,4 +700,18 @@ class DiscoveryMigrationTests(TransactionTestCase):
                 _target(runtime_model(model), [], "off")[2]["thinking"],
                 {"type": "disabled"},
             )
-        self.assertEqual(Message.objects.get(pk=reply.pk).thinking_level, "max")
+        self.assertEqual(model.reasoning_overrides, {})
+        profile = runtime_model(model).reasoning_profile
+        self.assertEqual(profile.public()["mode"], "combined")
+        self.assertEqual(
+            profile.payload({"toggle": False}), {"thinking": {"type": "disabled"}}
+        )
+        historical = Message.objects.get(pk=reply.pk)
+        self.assertEqual(
+            (
+                historical.thinking_level,
+                historical.reasoning_settings,
+                historical.content,
+            ),
+            ("max", {}, "old answer"),
+        )

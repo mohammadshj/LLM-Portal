@@ -13,7 +13,8 @@ import httpx
 from django.conf import settings
 from django.core.exceptions import ValidationError
 
-from .thinking import parameters
+from .capabilities import runtime_model
+from .reasoning_profiles import legacy_selection
 from .tokens import parse_usage
 
 logger = logging.getLogger(__name__)
@@ -115,16 +116,27 @@ def _target(model, messages, level=None):
                 "کلید این اتصال در محیط سرور تنظیم نشده است.", code="configuration"
             )
         headers["Authorization"] = f"Bearer {key}"
-    chosen = model.thinking_default if level is None else level
-    if chosen and chosen not in model.thinking_levels:
-        raise ProviderError("سطح استدلال برای این مدل مجاز نیست.", code="configuration")
+    if not hasattr(model, "reasoning_profile"):
+        model = runtime_model(model)
+    try:
+        if isinstance(level, dict):
+            values = level
+        elif level is not None:
+            values = legacy_selection(model, level)
+        else:
+            values = model.reasoning_profile.defaults()
+        fragment = model.reasoning_profile.payload(values)
+    except ValidationError:
+        raise ProviderError(
+            "تنظیم استدلال برای این مدل مجاز نیست.", code="configuration"
+        ) from None
     return (
         f"{connection.base_url}/chat/completions",
         headers,
         {
             "model": model.model_id,
             "messages": messages,
-            **parameters(model.thinking_contract, chosen, model.thinking_budgets),
+            **fragment,
             model.output_parameter: model.max_output_tokens,
         },
     )
@@ -421,7 +433,9 @@ async def stream_complete(model, messages, level=None):
         url, headers, payload = _target(model, messages, level)
         expose = (
             model.reasoning_policy != "hidden"
-            and (level or model.thinking_default) != "off"
+            and payload.get("thinking", {}).get("type") != "disabled"
+            and payload.get("reasoning", {}).get("enabled") is not False
+            and payload.get("reasoning", {}).get("effort") != "none"
         )
         if model.connection.streaming_enabled and getattr(model, "can_stream", True):
             payload["stream"] = True

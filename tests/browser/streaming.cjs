@@ -44,9 +44,10 @@ get_user_model().objects.create_user(params["user"], password=params["password"]
 conn = ModelConnection.objects.create(name=params["user"], base_url="http://127.0.0.1:%d/v1" % params["port"], api_key_env="")
 for model in ("fast", "slow", "failure"):
     LanguageModel.objects.create(name=params["user"]+" "+model, provider="openai", connection=conn, model_id=model,
-        thinking_contract="toggle_effort" if model=="fast" else "effort",
-        thinking_levels=["off","low","high","max"] if model=="fast" else ["low","high","max"],
-        thinking_default="max", reasoning_policy="store")
+        thinking_contract={"fast":"toggle_effort","slow":"effort","failure":"budget_tokens"}[model],
+        thinking_levels=["off","low","high","max"] if model=="fast" else (["brief","deep"] if model=="failure" else ["low","high","max"]),
+        thinking_budgets={"brief":64,"deep":256} if model=="failure" else {},
+        thinking_default="brief" if model=="failure" else "max", reasoning_policy="store")
 `;
 const checkAccounting = `
 from portal.models import Account, Message
@@ -66,8 +67,8 @@ assert account.tokens_used == sum(m.total_tokens or 0 for m in rows)
 for m in rows:
     if m.status == "completed":
         assert m.total_tokens == 20
-        assert m.reasoning_tokens == (0 if m.thinking_level=="off" else 6)
-    if m.status != "failed" and m.thinking_level != "off":
+        assert m.reasoning_tokens == (0 if m.reasoning_settings.get("toggle") is False else 6)
+    if m.status != "failed" and m.reasoning_settings.get("toggle") is not False:
         assert m.reasoning_content == "TRACE[%s/%s]" % (m.conversation.title, m.model.model_id)
     assert "TRACE" not in m.content
 `;
@@ -208,6 +209,21 @@ async function run() {
         );
       await page.getByText("تنظیمات استدلال", { exact: true }).click();
       for (const model of models) {
+        if (model === "failure") {
+          await page
+            .getByRole("combobox", {
+              name: "بودجهٔ استدلال " + user + " failure",
+            })
+            .selectOption("256");
+          continue;
+        }
+        if (model === "fast") {
+          const toggle = page.getByRole("switch", {
+            name: "فعال‌سازی استدلال " + user + " fast",
+          });
+          await toggle.setChecked(level !== "off");
+          if (level === "off") continue;
+        }
         const select = page.getByRole("combobox", {
           name: "شدت استدلال " + user + " " + model,
         });
@@ -281,6 +297,12 @@ async function run() {
           observed("started", `${A}/${model}`),
         ),
       "Three providers never ran concurrently",
+    );
+    assert.ok(
+      records.some((r) => r.task === A + "/failure" && r.budget === 256),
+    );
+    assert.ok(
+      records.some((r) => r.task === A + "/slow" && r.level === "high"),
     );
     await thread.getByText(`FIRST[${A}/slow]`, { exact: true }).waitFor();
     const fastClock = cards
@@ -511,7 +533,7 @@ from portal.discovery import sync_models
 from portal.models import ModelConnection
 conn = ModelConnection.objects.get(name=params["user"])
 with override_settings(DISCOVERY_LOCAL_ORIGINS={conn.base_url.removesuffix("/v1")}):
-    assert sync_models(conn.pk)["added"] == 2
+    assert sync_models(conn.pk)["added"] == 5
 assert conn.models.filter(auto_thinking=True, enabled=True).count() == 0
 conn.models.filter(auto_thinking=True).update(enabled=True)
 `);
@@ -528,6 +550,44 @@ conn.models.filter(auto_thinking=True).update(enabled=True)
     await unknown.check();
     assert.equal(await page.getByRole("combobox").count(), 0);
     await unknown.uncheck();
+    const fixed = page.getByRole("checkbox", {
+      name: user + " fixed",
+      exact: true,
+    });
+    const toggle = page.getByRole("checkbox", {
+      name: user + " toggle",
+      exact: true,
+    });
+    await fixed.check();
+    await toggle.check();
+    await page.getByText("تنظیمات استدلال", { exact: true }).click();
+    await page.getByText("استدلال برای این مدل اجباری است.").waitFor();
+    const range = page.getByRole("checkbox", {
+      name: user + " range",
+      exact: true,
+    });
+    await range.check();
+    const slider = page.getByRole("slider", {
+      name: "بودجهٔ استدلال " + user + " range",
+    });
+    await slider.focus();
+    await slider.press("End");
+    assert.equal(
+      await page
+        .getByRole("spinbutton", {
+          name: "تعداد توکن استدلال " + user + " range",
+        })
+        .inputValue(),
+      "256",
+    );
+    await range.uncheck();
+    const switcher = page.getByRole("switch", {
+      name: "فعال‌سازی استدلال " + user + " toggle",
+    });
+    await switcher.check();
+    await page.getByText("تنظیمات استدلال", { exact: true }).click();
+    await fixed.uncheck();
+    await toggle.uncheck();
     await page
       .getByRole("checkbox", { name: user + " catalog", exact: true })
       .check();

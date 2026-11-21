@@ -72,3 +72,20 @@ Playwright روی خروجی تولیدی و یک Provider آزمایشی HTTP،
 ساخت Docker، بررسی TypeScript، Vite، Ruff، بررسی Django و Nginx موفق بود. Migrationهای ۰۰۰۸ و ۰۰۰۹ روی دیتابیس محیط اعمال شدند و بررسی مدل‌ها تغییر دیگری گزارش نکرد. Playwright فهرست یک Provider کنترل‌شده را همگام کرد، مدل‌ها را فعال کرد و مقدار انتخاب‌شدهٔ `xhigh` را در درخواست HTTP همان مدل مشاهده کرد. مدل با قابلیت نامعلوم انتخابگر Effort نداشت. سناریوهای Streaming، مقایسه، توقف و تاریخچه نیز اجرا شدند.
 
 در بررسی منابع، دریافت مستقیم `https://models.dev/api.json` در این محیط پاسخ ۴۰۳ داشت. ساختار رسمی Registry از مخزن آن بررسی شد. Cache، واردکردن فایل، مصرف Snapshot و ادامهٔ کار هنگام قطع دسترسی با دادهٔ کنترل‌شده آزموده شدند. دسترسی زندهٔ Provider شرکت یا اعتبار یک کلید تجاری در این آزمون‌ها بررسی نشده است. [راهنمای کشف مدل](discovery.md) · [اجرای آزمون مرورگر](../tests/browser/README.md)
+
+## اعتبارسنجی پروفایل استدلال
+
+تست‌های `test_reasoning_profiles.py` و `test_discovery.py` تقدم شواهد، انقضای شواهد بعد از تغییر مقصد، ذخیره و آزاد کردن Override از خود فرم Admin، قراردادهای Toggle/Effort/Budget، گزینه‌های سفارشی و خطای تنظیم نامعتبر پیش از ایجاد پیام را بررسی می‌کنند. تست ارتقا یک مدل و پیام قدیمی را تا آخرین Migration منتقل و هم پروفایل مؤثر و هم مقدار تاریخی را می‌خواند. تست‌های HTTP برای انتخاب‌های مستقل سه مدل، JSON، SSE، ذخیرهٔ تاریخچه، سهمیه و لغو با Provider کنترل‌شده اجرا می‌شوند.
+
+برای تکرار آزمون‌ها با PostgreSQL آزمایشی و Node 24 از ریشهٔ پروژه:
+
+```sh
+docker compose run --rm backend python manage.py test portal
+docker compose run --rm backend python manage.py check
+docker compose run --rm backend python manage.py makemigrations --check --dry-run
+(cd frontend && npm ci && npm run build && node --test tests/reasoning.test.mjs)
+```
+
+آزمون Playwright انتخاب Toggle و Effort در یک مدل، Effort مستقل در مدل دوم و بودجهٔ ۲۵۶ توکن در مدل سوم را در درخواست‌های HTTP مشاهده می‌کند. بخش Discovery همین آزمون نمایش مدل ثابت، مدل نامعلوم، کلید فعال‌سازی و ارتباط Slider با ورودی دقیق بودجه را بررسی می‌کند. راه‌اندازی سرویس آزمایشی و Chromium در راهنمای تست مرورگر آمده است. [راهنمای Playwright](../tests/browser/README.md)
+
+در اجرای ۲۱ نوامبر ۲۰۲۶، هر ۹۵ تست Django روی PostgreSQL و هر سه تست مستقل انتخاب تنظیمات در Node موفق شدند. سناریوی کامل Chromium از طریق Nginx، ساخت Docker، TypeScript، Vite، Ruff، بررسی Django و تطبیق Migrationها نیز موفق بود. Migration شمارهٔ ۰۰۱۱ در محیط آزمایش اعمال شد. سرویس HTTP آزمایشی بدنهٔ درخواست‌ها را ثبت کرد و آزمون‌ها به کلید تجاری نیاز نداشتند.

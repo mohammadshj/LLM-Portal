@@ -30,7 +30,7 @@ class RequestConflict(ValidationError):
 
 @dataclass
 class Job:
-    reply_id: int
+    reply: Message
     model: LanguageModel
     messages: list
     thinking_level: str = ""
@@ -292,7 +292,7 @@ def reserve_turn(
                 thinking_level=level,
                 reasoning_origin=origin,
             )
-            jobs.append(Job(reply.pk, model, messages, level))
+            jobs.append(Job(reply, model, messages, level))
         return turn, jobs
 
 
@@ -322,8 +322,17 @@ def _usage(reply, text, reasoning_bytes, usage):
 
 
 def finish_reply(
-    reply_id, status, text="", usage=None, error="", reasoning=None, reasoning_bytes=0
+    reply_id,
+    status,
+    text="",
+    usage=None,
+    error="",
+    reasoning=None,
+    reasoning_bytes=0,
+    *,
+    finished_at=None,
 ):
+    finished_at = finished_at or timezone.now()
     if status not in {"completed", "failed", "cancelled"}:
         raise ValueError("Invalid reply state")
     with transaction.atomic():
@@ -334,14 +343,14 @@ def finish_reply(
                 .get()
             )
         except Message.DoesNotExist:
-            return "cancelled"  # Owner removed after the lease was recovered.
+            return "cancelled", None  # Owner removed after the lease was recovered.
         account = _locked_account(user_id)
         turn = Message.objects.select_for_update().filter(pk=parent_id).first()
         if turn is None:
-            return "cancelled"
+            return "cancelled", None
         reply = Message.objects.get(pk=reply_id)
         if reply.status != "running":
-            return reply.status  # Fence late writers; settle each reply just once.
+            return reply.status, reply.response_duration_ms  # Fence late writers.
         if turn.cancel_requested or status == "cancelled":
             status = "cancelled"
             if not turn.cancel_requested:
@@ -371,6 +380,7 @@ def finish_reply(
             ledger.save(
                 update_fields=["input_tokens", "output_tokens", "unsplit_tokens"]
             )
+        reply.response_duration_ms = reply.elapsed_ms(finished_at)
         reply.status = status
         reply.content = text
         reply.input_tokens = counts.incoming
@@ -393,7 +403,8 @@ def finish_reply(
                 "reasoning_content",
                 "error",
                 "reserved_tokens",
+                "response_duration_ms",
             ]
         )
         _close_turn_if_done(turn)
-        return status
+        return status, reply.response_duration_ms

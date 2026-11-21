@@ -59,6 +59,7 @@ for key in [(a, "fast"), (a, "slow"), (c, "fast")]:
     assert (m.status, m.input_tokens, m.output_tokens, m.usage_source) == ("completed", 7, 13, "reported"), key
 assert actual[a, "failure"].status == "failed"
 assert actual[b, "fast"].status == "cancelled"
+assert all(m.response_duration_ms is not None for m in rows)
 assert all(m.reserved_tokens == 0 for m in rows)
 account = Account.objects.get(user__username=params["user"])
 assert account.tokens_used == sum(m.total_tokens or 0 for m in rows)
@@ -282,6 +283,17 @@ async function run() {
       "Three providers never ran concurrently",
     );
     await thread.getByText(`FIRST[${A}/slow]`, { exact: true }).waitFor();
+    const fastClock = cards
+      .filter({ hasText: `FIRST[${A}/fast]` })
+      .locator("time");
+    const slowClock = cards
+      .filter({ hasText: `FIRST[${A}/slow]` })
+      .locator("time");
+    const initial = await slowClock.getAttribute("datetime");
+    await until(
+      async () => (await slowClock.getAttribute("datetime")) !== initial,
+      "The timer did not advance while waiting for more tokens",
+    );
     await start(B, ["fast"], "high");
     await start(C, ["fast"], "off");
     assert.equal(records.filter((r) => r.event === "finished").length, 0);
@@ -298,6 +310,17 @@ async function run() {
     release(`${A}/fast`);
     await cards.filter({ hasText: `LAST[${A}/fast]` }).waitFor();
     assert.equal(await cards.filter({ hasText: `LAST[${A}/slow]` }).count(), 0);
+    await cards
+      .filter({ hasText: `LAST[${A}/fast]` })
+      .and(page.locator('[data-status="completed"]'))
+      .waitFor();
+    const fastFinal = await fastClock.getAttribute("datetime");
+    const stillRunning = await slowClock.getAttribute("datetime");
+    await until(
+      async () => (await slowClock.getAttribute("datetime")) !== stillRunning,
+      "The slower model clock stopped when its sibling completed",
+    );
+    assert.equal(await fastClock.getAttribute("datetime"), fastFinal);
     release(`${A}/failure`);
     await open(C);
     release(`${C}/fast`);
@@ -313,6 +336,10 @@ async function run() {
     await open(A);
     await cards.filter({ hasText: `LAST[${A}/fast]` }).waitFor();
     await cards.filter({ hasText: `LAST[${A}/slow]` }).waitFor();
+    assert.equal(await fastClock.getAttribute("datetime"), fastFinal);
+    const slowFinal = await slowClock.getAttribute("datetime");
+    const asSeconds = (duration) => Number(duration.slice(2, -1));
+    assert.ok(asSeconds(slowFinal) > asSeconds(fastFinal));
     const first = cards.filter({ hasText: `LAST[${A}/fast]` });
     await first.locator(".reasoning summary").click();
     await first

@@ -15,6 +15,7 @@ export type ChatEvent = {
   conversation_id: number;
   model_id?: number;
   text?: string;
+  elapsed_ms?: number | null;
   detail?: string;
   usage?: Pick<
     Message,

@@ -245,6 +245,7 @@ class StreamHTTPTests(TransactionTestCase):
 
         for chat in self.chats:
             reply = await Message.objects.aget(conversation=chat, role="assistant")
+            self.assertGreaterEqual(reply.response_duration_ms, 0)
             self.assertEqual(reply.reserved_tokens, 0)
             self.assertEqual(
                 reply.content, f"{chat.title}..." + ("" if chat.title == "B" else "end")
@@ -271,11 +272,12 @@ class StreamHTTPTests(TransactionTestCase):
         with patch("portal.streaming.stream_complete", unreliable_provider):
             async with self.open_stream(chat, payload) as stream:
                 result = await stream.until("model_error")
+                failure_ms = result["elapsed_ms"]
                 self.assertEqual(result["model_id"], model.pk)
                 await stream.until("done")
 
             async with self.open_stream(chat, self.payload(chat)) as stream:
-                await stream.until("model_done")
+                success_ms = (await stream.until("model_done"))["elapsed_ms"]
                 await stream.until("done")
 
         expected = [{"role": "user", "content": payload["content"]}]
@@ -288,6 +290,11 @@ class StreamHTTPTests(TransactionTestCase):
         ]
         self.assertEqual([row.status for row in rows], ["failed", "completed"])
         self.assertEqual([row.reserved_tokens for row in rows], [0, 0])
+        self.assertIsInstance(failure_ms, int)
+        self.assertIsInstance(success_ms, int)
+        self.assertEqual(
+            [row.response_duration_ms for row in rows], [failure_ms, success_ms]
+        )
         self.assertTrue(rows[0].error)
 
     async def test_http_disconnect_closes_upstream_and_releases_partial_reply(self):

@@ -25,6 +25,8 @@ class ModelSerializer(serializers.ModelSerializer):
 
 
 class MessageSerializer(serializers.ModelSerializer):
+    elapsed_ms = serializers.IntegerField(read_only=True, allow_null=True)
+
     model_name = serializers.CharField(
         source="model.name", default=None, read_only=True
     )
@@ -42,6 +44,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "request_id",
             "error",
             "usage_source",
+            "elapsed_ms",
             "thinking_level",
             "reasoning_content",
             "reasoning_tokens",

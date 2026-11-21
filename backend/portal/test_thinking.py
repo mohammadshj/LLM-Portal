@@ -121,7 +121,7 @@ class ThinkingTests(TestCase):
         )
         self.assertEqual(Account.objects.get(user=self.user).tokens_used, 36)
         _, jobs = reserve_turn(self.user, self.chat, "next", [self.model.pk])
-        bound = Message.objects.get(pk=jobs[0].reply_id).input_bound
+        bound = Message.objects.get(pk=jobs[0].reply.pk).input_bound
         self.assertEqual(
             bound,
             32
@@ -171,7 +171,7 @@ class ThinkingTests(TestCase):
 
     def test_preserve_does_not_replay_to_a_reconfigured_endpoint_or_another_model(self):
         _, jobs = reserve_turn(self.user, self.chat, "first", [self.model.pk])
-        finish_reply(jobs[0].reply_id, "completed", "answer", None, "", "private", 7)
+        finish_reply(jobs[0].reply.pk, "completed", "answer", None, "", "private", 7)
         self.model.model_id = "new-version"
         self.model.save()
         with self.assertRaises(ValidationError):

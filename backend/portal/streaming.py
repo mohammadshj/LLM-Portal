@@ -9,6 +9,7 @@ from io import StringIO
 
 from asgiref.sync import async_to_sync, sync_to_async
 from django.http import StreamingHttpResponse
+from django.utils import timezone
 
 from .providers import ProviderError, stream_complete
 from .services import finish_reply, reserve_turn, should_cancel
@@ -111,24 +112,26 @@ class TurnStream:
             error = "در پردازش پاسخ مدل خطایی رخ داد."
             logger.error(
                 "stream_reader_failed",
-                extra={"reply_id": job.reply_id, "error_class": type(exc).__name__},
+                extra={"reply_id": job.reply.pk, "error_class": type(exc).__name__},
             )
 
         # Database failure terminates this stream; the lease covers uncommitted work.
-        status = await sync_to_async(finish_reply)(
-            job.reply_id,
+        status, elapsed_ms = await sync_to_async(finish_reply)(
+            job.reply.pk,
             status,
             progress.answer.getvalue(),
             progress.usage,
             error,
             progress.reasoning.getvalue() if progress.reasoning is not None else None,
             progress.reasoning_bytes,
+            finished_at=timezone.now(),
         )
         await self.emit(
             job,
             "model_error" if status == "failed" else "model_done",
             status=status,
             detail=error,
+            elapsed_ms=elapsed_ms,
             usage=(
                 {
                     "input_tokens": progress.usage.incoming,
@@ -164,6 +167,7 @@ class TurnStream:
                 yield (
                     {
                         "type": "model_start",
+                        "elapsed_ms": job.reply.elapsed_ms(),
                         "model_id": job.model.pk,
                         "model_name": job.model.name,
                     }
@@ -215,7 +219,7 @@ class TurnStream:
             await asyncio.gather(*tasks, return_exceptions=True)
             # Stop/disconnect can precede creation of any provider tasks.
             for job in self.jobs[len(writers) :]:
-                await sync_to_async(finish_reply)(job.reply_id, "cancelled")
+                await sync_to_async(finish_reply)(job.reply.pk, "cancelled")
 
     async def frames(self):
         async with aclosing(self.events()) as events:
@@ -235,7 +239,7 @@ class TurnStream:
     def close_unstarted(self):
         if not self.started:
             for job in self.jobs:
-                finish_reply(job.reply_id, "cancelled")
+                finish_reply(job.reply.pk, "cancelled")
 
 
 class EventStreamResponse(StreamingHttpResponse):

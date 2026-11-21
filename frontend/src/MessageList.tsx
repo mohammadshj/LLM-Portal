@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { Message } from "./types";
 import { CopyButton, Dialog, number, thinkingName } from "./ui";
+import { ResponseTime } from "./ResponseTime";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 const statusText = {
@@ -144,12 +145,15 @@ const ResponseCard = memo(function ResponseCard({
           <strong className="message-label" dir="auto">
             {m.model_name || "مدل"}
           </strong>
-          {m.status && (
-            <small className="card-status" role="status">
-              {m.status === "completed" && <CircleCheck />}
-              {statusText[m.status]}
-            </small>
-          )}
+          <div className="response-meta">
+            {m.status && (
+              <small className="card-status" role="status">
+                {m.status === "completed" && <CircleCheck />}
+                {statusText[m.status]}
+              </small>
+            )}
+            <ResponseTime message={m} />
+          </div>
         </div>
         <button
           className="icon"

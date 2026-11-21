@@ -10,6 +10,7 @@ from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
 from .models import Conversation, LanguageModel, Message, ModelUsage
+from .serializers import MessageSerializer
 from .services import (
     RequestConflict,
     finish_reply,
@@ -34,6 +35,20 @@ class ReservationTests(TransactionTestCase):
     def reserve(self, chat, key=None):
         return reserve_turn(self.user, chat, "q", [self.model.pk], key or uuid4())
 
+    def test_response_duration_survives_history_and_duplicate_settlement(self):
+        turn, jobs = self.reserve(self.chats[0])
+        reply = jobs[0].reply
+        self.assertIsNone(MessageSerializer(turn).data["elapsed_ms"])
+        self.assertGreaterEqual(MessageSerializer(reply).data["elapsed_ms"], 0)
+        end = reply.created_at + timedelta(milliseconds=1234)
+        for finish in [end, end + timedelta(minutes=2)]:
+            result = finish_reply(reply.pk, "completed", "answer", finished_at=finish)
+            self.assertEqual(result, ("completed", 1234))
+        reply.refresh_from_db()
+        self.assertEqual(MessageSerializer(reply).data["elapsed_ms"], 1234)
+        legacy = Message.objects.create(conversation=self.chats[0], role="assistant")
+        self.assertIsNone(MessageSerializer(legacy).data["elapsed_ms"])
+
     def test_expiry_fences_late_writer_and_restores_admission(self):
         turn, jobs = self.reserve(self.chats[0])
         Message.objects.filter(pk=turn.pk).update(
@@ -41,9 +56,10 @@ class ReservationTests(TransactionTestCase):
         )
         self.assertEqual(recover_reservations(), 1)
         self.assertEqual(
-            finish_reply(jobs[0].reply_id, "completed", "late", (100, 100)), "failed"
+            finish_reply(jobs[0].reply.pk, "completed", "late", (100, 100)),
+            ("failed", None),
         )
-        self.assertEqual(Message.objects.get(pk=jobs[0].reply_id).reserved_tokens, 0)
+        self.assertEqual(Message.objects.get(pk=jobs[0].reply.pk).reserved_tokens, 0)
         self.assertFalse(ModelUsage.objects.exists())
         self.assertEqual(recover_reservations(), 0)
         self.reserve(self.chats[0])
@@ -51,20 +67,20 @@ class ReservationTests(TransactionTestCase):
     def test_overreported_usage_preserves_other_reservations_and_exact_ledger(self):
         _, first = self.reserve(self.chats[0])
         _, second = self.reserve(self.chats[1])
-        hold = Message.objects.get(pk=first[0].reply_id).reserved_tokens
-        finish_reply(first[0].reply_id, "completed", "answer", (100, 900))
-        finish_reply(first[0].reply_id, "completed", "duplicate", (100, 900))
+        hold = Message.objects.get(pk=first[0].reply.pk).reserved_tokens
+        finish_reply(first[0].reply.pk, "completed", "answer", (100, 900))
+        finish_reply(first[0].reply.pk, "completed", "duplicate", (100, 900))
         self.account.refresh_from_db()
         self.assertEqual(self.account.tokens_used, hold)
         self.assertEqual(
-            Message.objects.get(pk=second[0].reply_id).reserved_tokens, hold
+            Message.objects.get(pk=second[0].reply.pk).reserved_tokens, hold
         )
         self.assertEqual(ModelUsage.objects.get(model=self.model).output_tokens, 900)
 
     def test_replaying_uuid_never_repeats_a_finished_request(self):
         key = uuid4()
         _, jobs = self.reserve(self.chats[0], key)
-        finish_reply(jobs[0].reply_id, "completed", "answer", (1, 1))
+        finish_reply(jobs[0].reply.pk, "completed", "answer", (1, 1))
         with self.assertRaises(RequestConflict):
             self.reserve(self.chats[0], key)
         self.assertEqual(Message.objects.count(), 2)

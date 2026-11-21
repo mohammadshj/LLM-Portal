@@ -30,6 +30,9 @@ export type Message = {
   error?: string;
   reasoning_content?: string | null;
   thinking_level?: string;
+  elapsed_ms?: number | null;
+  // Local monotonic timestamp for the latest running elapsed_ms snapshot.
+  elapsedSampleAt?: number;
   reasoning_tokens?: number | null;
   total_tokens?: number | null;
   usage_source?:

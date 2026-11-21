@@ -1,9 +1,12 @@
+from datetime import timedelta
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.utils import timezone
 
 from .capabilities import validate_overrides
 from .thinking import CONTRACTS, POLICIES, validate_capabilities
@@ -225,6 +228,8 @@ class Message(models.Model):
     reasoning_origin = models.CharField(max_length=64, blank=True)
     reasoning_tokens = models.PositiveIntegerField(null=True)
     total_tokens = models.PositiveBigIntegerField(null=True)
+    response_duration_ms = models.PositiveBigIntegerField(null=True, editable=False)
+
     # User rows are turns; each selected model gets a child row before dispatch.
     parent = models.ForeignKey(
         "self", null=True, on_delete=models.CASCADE, related_name="replies"
@@ -238,6 +243,12 @@ class Message(models.Model):
     input_bound = models.PositiveIntegerField(default=0)
     lease_until = models.DateTimeField(null=True, db_index=True)
     cancel_requested = models.BooleanField(default=False)
+
+    def elapsed_ms(self, at=None):
+        if self.role == "assistant" and self.status == "running":
+            elapsed = (at or timezone.now()) - self.created_at
+            return max(0, elapsed // timedelta(milliseconds=1))
+        return self.response_duration_ms
 
     class Meta:
         ordering = ["id"]

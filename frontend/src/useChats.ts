@@ -51,6 +51,12 @@ function applyEvent(live: LiveTurn, event: ChatEvent): LiveTurn {
     messages: live.messages.map((m) => {
       if (m.model_id !== event.model_id) return m;
       switch (event.type) {
+        case "model_start":
+          return {
+            ...m,
+            elapsed_ms: event.elapsed_ms ?? 0,
+            elapsedSampleAt: performance.now(),
+          };
         case "reasoning_delta":
           return {
             ...m,
@@ -63,12 +69,14 @@ function applyEvent(live: LiveTurn, event: ChatEvent): LiveTurn {
             ...m,
             ...event.usage,
             status: event.status === "cancelled" ? "cancelled" : "failed",
+            elapsed_ms: event.elapsed_ms,
             error: event.detail,
           };
         case "model_done":
           return {
             ...m,
             ...event.usage,
+            elapsed_ms: event.elapsed_ms,
             status: event.status === "cancelled" ? "cancelled" : "completed",
           };
         default:
@@ -137,6 +145,11 @@ export function useChats(
         controller.signal,
       );
       if (controller.signal.aborted || !mounted.current) return;
+      const sampledAt = performance.now();
+      for (const message of detail.messages) {
+        if (message.status === "running" && message.elapsed_ms != null)
+          message.elapsedSampleAt = sampledAt;
+      }
       edit(id, (c) => ({
         ...c,
         detail,
@@ -202,6 +215,7 @@ export function useChats(
       if (effort && model.thinking_levels?.includes(effort))
         thinking[model.id] = effort;
     }
+    const sentAt = performance.now();
     const messages: Message[] = [
       { ...common, id: -1, role: "user", content, model_name: null },
       ...selected.map((m) => ({
@@ -213,6 +227,8 @@ export function useChats(
         thinking_level: thinking[m.id],
         model_id: m.id,
         status: "running" as const,
+        elapsed_ms: 0,
+        elapsedSampleAt: sentAt,
       })),
     ];
     edit(source, (c) => ({
@@ -364,7 +380,32 @@ export function useChats(
     (m) =>
       !live || (m.request_id !== live.id && (!turn || m.parent_id !== turn.id)),
   );
-  if (live) messages.push(...live.messages);
+  if (live) {
+    for (const m of live.messages) {
+      // A reconnect may find one model settled while its siblings are still running.
+      const row =
+        turn && m.role === "assistant"
+          ? stored.find(
+              (row) => row.parent_id === turn.id && row.model_id === m.model_id,
+            )
+          : undefined;
+      if (row && row.status !== "running") {
+        messages.push({
+          ...row,
+          reasoning_content: row.reasoning_content ?? m.reasoning_content,
+        });
+      } else if (m.status === "running" && !sends.current.has(activeId)) {
+        // Only advance a disconnected stream's clock while polling confirms it is active.
+        messages.push({
+          ...m,
+          elapsed_ms: chat.readError ? null : row?.elapsed_ms,
+          elapsedSampleAt: row?.elapsedSampleAt,
+        });
+      } else {
+        messages.push(m);
+      }
+    }
+  }
   return {
     activeId,
     chat,

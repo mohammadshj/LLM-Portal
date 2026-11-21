@@ -1,0 +1,7 @@
+{% extends "admin/change_form.html" %}
+{% block object-tools-items %}
+  {{ block.super }}
+  {% if original and has_change_permission %}
+    <li><form method="post" action="{% url 'admin:portal_connection_sync' original.pk %}">{% csrf_token %}<button type="submit">همگام‌سازی مدل‌ها (Sync Models)</button></form></li>
+  {% endif %}
+{% endblock %}

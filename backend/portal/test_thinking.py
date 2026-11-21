@@ -177,6 +177,8 @@ class ThinkingTests(TestCase):
         with self.assertRaises(ValidationError):
             reserve_turn(self.user, self.chat, "q", [self.model.pk])
         self.model.pk = None
+        # A pre-discovery alias may share an upstream ID but keeps its own history.
+        self.model.legacy_alias = True
         self.model.save()
         _, jobs = reserve_turn(self.user, self.chat, "q", [self.model.pk])
         self.assertEqual(jobs[0].messages, [{"role": "user", "content": "q"}])
@@ -293,6 +295,7 @@ class ThinkingWireTests(SimpleTestCase):
         model.connection.api_key_env = ""
         model.reasoning_policy = "live"
         model.thinking_contract = "effort"
+        model.thinking_levels = ["low"]
         model.output_parameter = "max_completion_tokens"
         model.stream_usage_option = False
 

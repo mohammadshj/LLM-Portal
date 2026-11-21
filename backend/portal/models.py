@@ -5,7 +5,8 @@ from django.db import models
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
-from .thinking import CONTRACTS, LEVELS, POLICIES, validate_capabilities
+from .capabilities import validate_overrides
+from .thinking import CONTRACTS, POLICIES, validate_capabilities
 from .validators import validate_connection_url, validate_key_env
 
 
@@ -44,6 +45,26 @@ class ModelConnection(models.Model):
     )
     enabled = models.BooleanField(default=True, verbose_name="فعال")
 
+    discovery_type = models.CharField(
+        max_length=16,
+        default="compatible",
+        choices=[
+            ("compatible", "OpenAI-compatible"),
+            ("openai", "OpenAI Chat Completions"),
+            ("openrouter", "OpenRouter"),
+            ("ollama", "Ollama"),
+            ("lmstudio", "LM Studio"),
+        ],
+    )
+    registry_provider = models.SlugField(
+        blank=True,
+        max_length=100,
+        help_text="شناسهٔ دقیق Provider در Models.dev. خالی یعنی بدون Registry برای اتصال سفارشی.",
+    )
+    sync_started_at = models.DateTimeField(null=True, editable=False)
+    last_synced_at = models.DateTimeField(null=True, editable=False)
+    sync_result = models.JSONField(default=dict, editable=False)
+
     streaming_enabled = models.BooleanField(
         default=True, verbose_name="ارسال درخواست جریانی"
     )
@@ -78,6 +99,7 @@ class LanguageModel(models.Model):
         help_text="برای مدل واقعی الزامی است؛ چند مدل می‌توانند یک اتصال داشته باشند.",
     )
     model_id = models.CharField(max_length=150)
+    legacy_alias = models.BooleanField(default=False, editable=False)
     context_window = models.PositiveIntegerField(default=8192)
     max_output_tokens = models.PositiveIntegerField(default=512)
     enabled = models.BooleanField(default=True)
@@ -98,8 +120,23 @@ class LanguageModel(models.Model):
         max_length=16, default="none", choices=[(c, c) for c in CONTRACTS]
     )
     thinking_levels = models.JSONField(default=list, blank=True)
-    thinking_default = models.CharField(
-        max_length=8, blank=True, choices=[(v, v) for v in LEVELS]
+    thinking_default = models.CharField(max_length=32, blank=True)
+    thinking_budgets = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="نگاشت سطح به تعداد توکن برای قرارداد budget_tokens",
+    )
+    auto_thinking = models.BooleanField(
+        default=False,
+        verbose_name="استفاده از قرارداد استدلال کشف‌شده",
+        help_text="برای استفاده از قرارداد و سطح‌های دستی این گزینه را بردارید.",
+    )
+    discovery_data = models.JSONField(default=dict, editable=False)
+    capability_overrides = models.JSONField(
+        default=dict,
+        blank=True,
+        validators=[validate_overrides],
+        help_text='مثال: {"reasoning": false, "context_window": 8192}',
     )
     reasoning_policy = models.CharField(
         max_length=12, choices=POLICIES, default="hidden"
@@ -116,8 +153,29 @@ class LanguageModel(models.Model):
         help_text="حاشیهٔ تخمین بایتی برای هر پیام و کل درخواست",
     )
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["connection", "model_id"],
+                condition=models.Q(legacy_alias=False, connection__isnull=False),
+                name="unique_connection_catalog_model",
+            )
+        ]
+
     def clean(self):
         super().clean()
+        if self.connection_id:
+            same_id = LanguageModel.objects.filter(
+                connection_id=self.connection_id, model_id=self.model_id
+            )
+            if (
+                same_id.exclude(pk=self.pk).exists()
+                and not same_id.filter(pk=self.pk).exists()
+            ):
+                raise ValidationError(
+                    {"model_id": "این شناسه قبلاً در همین اتصال ثبت شده است."}
+                )
+        validate_overrides(self.capability_overrides)
         validate_capabilities(self)
         if self.provider == "openai" and not self.connection_id:
             raise ValidationError(
@@ -130,6 +188,12 @@ class LanguageModel(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class RegistrySnapshot(models.Model):
+    provider_id = models.SlugField(max_length=100, primary_key=True)
+    fetched_at = models.DateTimeField()
+    models = models.JSONField()
 
 
 class Conversation(models.Model):
@@ -156,7 +220,7 @@ class Message(models.Model):
     output_tokens = models.PositiveIntegerField(null=True, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    thinking_level = models.CharField(max_length=8, blank=True)
+    thinking_level = models.CharField(max_length=32, blank=True)
     reasoning_content = models.TextField(null=True)
     reasoning_origin = models.CharField(max_length=64, blank=True)
     reasoning_tokens = models.PositiveIntegerField(null=True)

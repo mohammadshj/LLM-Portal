@@ -198,9 +198,9 @@ export function useChats(
     };
     const thinking: Record<number, string> = {};
     for (const model of selected) {
-      if (model.thinking_levels?.length)
-        thinking[model.id] =
-          state.thinking?.[model.id] ?? model.thinking_default;
+      const effort = state.thinking?.[model.id] ?? model.thinking_default;
+      if (effort && model.thinking_levels?.includes(effort))
+        thinking[model.id] = effort;
     }
     const messages: Message[] = [
       { ...common, id: -1, role: "user", content, model_name: null },

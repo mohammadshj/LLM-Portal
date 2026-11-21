@@ -87,7 +87,11 @@ def health(request):
 
 class Models(generics.ListAPIView):
     serializer_class = ModelSerializer
-    queryset = LanguageModel.objects.filter(enabled=True).order_by("id")
+    queryset = (
+        LanguageModel.objects.filter(enabled=True)
+        .select_related("connection")
+        .order_by("id")
+    )
     pagination_class = None
 
 

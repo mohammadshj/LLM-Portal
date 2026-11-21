@@ -1,9 +1,21 @@
 """Validated wire contracts. A model opts in to a subset through Django Admin."""
 
+import re
+
 from django.core.exceptions import ValidationError
 
-LEVELS = ("off", "on", "low", "high", "max")
+
+def valid_level(value):
+    return (
+        isinstance(value, str)
+        and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,31}", value) is not None
+    )
+
+
 CONTRACTS = {
+    "native_effort": None,
+    "router_effort": None,
+    "budget_tokens": None,
     "none": (),
     "always": ("on",),
     "toggle": ("off", "on"),
@@ -25,18 +37,37 @@ def validate_capabilities(model):
     allowed = CONTRACTS.get(model.thinking_contract)
     levels = model.thinking_levels
     if (
-        allowed is None
+        model.thinking_contract not in CONTRACTS
         or not isinstance(levels, list)
-        or any(level not in allowed for level in levels)
+        or len(levels) > 64
+        or any(
+            not valid_level(level) or (allowed is not None and level not in allowed)
+            for level in levels
+        )
         or len(levels) != len(set(levels))
-        or bool(levels) != bool(allowed)
-        or (levels and model.thinking_default not in levels)
-        or (not levels and model.thinking_default)
+        or bool(levels) != (model.thinking_contract != "none")
+        or (levels and allowed is not None and not model.thinking_default)
+        or (model.thinking_default and model.thinking_default not in levels)
         or (model.provider == "demo" and levels)
     ):
         raise ValidationError(
             {"thinking_levels": "سطح‌ها و پیش‌فرض باید با قرارداد مدل سازگار باشند."}
         )
+    if model.thinking_contract == "budget_tokens":
+        budgets = model.thinking_budgets
+        if (
+            not isinstance(budgets, dict)
+            or set(budgets) != set(levels)
+            or any(
+                type(n) is not int or n < 1 or n >= model.max_output_tokens
+                for n in budgets.values()
+            )
+        ):
+            raise ValidationError(
+                {
+                    "thinking_budgets": "هر سطح به بودجهٔ صحیح مثبت و کمتر از سقف خروجی نیاز دارد."
+                }
+            )
     if (
         model.thinking_contract == "kimi_preserved"
         and model.reasoning_policy != "preserve"
@@ -47,7 +78,7 @@ def validate_capabilities(model):
             }
         )
     if model.reasoning_policy not in dict(POLICIES) or (
-        not levels and model.reasoning_policy != "hidden"
+        not levels and not model.auto_thinking and model.reasoning_policy != "hidden"
     ):
         raise ValidationError(
             {"reasoning_policy": "سیاست استدلال با قابلیت مدل سازگار نیست."}
@@ -61,9 +92,15 @@ def validate_capabilities(model):
         )
 
 
-def parameters(contract, level):
+def parameters(contract, level, budgets=None):
     if not level or contract == "always":
         return {}
+    if contract == "native_effort":
+        return {"reasoning_effort": level}
+    if contract == "router_effort":
+        return {"reasoning": {"effort": level}}
+    if contract == "budget_tokens":
+        return {"thinking": {"type": "enabled", "budget_tokens": budgets[level]}}
     if contract == "kimi_preserved":
         return {"thinking": {"type": "enabled", "effort": level, "keep": "all"}}
     payload = {}

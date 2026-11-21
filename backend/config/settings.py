@@ -109,3 +109,15 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/"
 LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "10"))
 LLM_READ_TIMEOUT = float(os.getenv("LLM_READ_TIMEOUT", "90"))
 LLM_TOTAL_TIMEOUT = float(os.getenv("LLM_TOTAL_TIMEOUT", "300"))
+
+# Exact trusted origins for private/loopback catalog servers. Metadata and
+# link-local destinations remain blocked even for a listed origin.
+DISCOVERY_LOCAL_ORIGINS = frozenset(
+    origin.strip().rstrip("/")
+    for origin in os.getenv("LLM_DISCOVERY_LOCAL_ORIGINS", "").split(",")
+    if origin.strip()
+)
+
+DISCOVERY_REGISTRY_OFFLINE = (
+    os.getenv("LLM_DISCOVERY_REGISTRY_OFFLINE", "").lower() == "true"
+)

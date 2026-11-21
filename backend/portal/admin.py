@@ -1,11 +1,19 @@
 from django import forms
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.forms import AdminUserCreationForm, UserChangeForm
 from django.contrib.auth.models import User
 
+from django.core.exceptions import PermissionDenied
+from django.http import HttpResponseNotAllowed
+from django.shortcuts import get_object_or_404, redirect
+from django.urls import path
+from django.utils.html import format_html, format_html_join
+
+from .capabilities import FLAGS, LIMITS, resolve
+from .discovery import sync_models
+from .discovery_http import DiscoveryError, ERRORS
 from .models import Account, LanguageModel, Message, ModelConnection
-from .thinking import LEVELS
 
 
 class PortalUserFields(forms.Form):
@@ -98,30 +106,147 @@ class AccountAdmin(admin.ModelAdmin):
         obj.save(update_fields=["token_limit"])
 
 
-class LanguageModelForm(forms.ModelForm):
-    thinking_levels = forms.MultipleChoiceField(
-        choices=[(v, v) for v in LEVELS],
-        required=False,
-        widget=forms.CheckboxSelectMultiple,
-        label="سطح‌های مجاز Thinking",
-    )
+class CatalogModelForm(forms.ModelForm):
+    def clean(self):
+        data = super().clean()
+        for key, fallback in (
+            ("thinking_levels", []),
+            ("thinking_budgets", {}),
+            ("capability_overrides", {}),
+        ):
+            if data.get(key) is None:
+                data[key] = fallback
+        return data
 
-    class Meta:
-        model = LanguageModel
-        fields = "__all__"
+
+class CatalogAdmin(admin.ModelAdmin):
+    def save_model(self, request, obj, form, change):
+        # Do not write a stale catalog snapshot back when an operator edits another field.
+        if change:
+            fields = list(form.changed_data)
+            if (
+                isinstance(obj, LanguageModel)
+                and obj.legacy_alias
+                and {"connection", "model_id"}.intersection(fields)
+            ):
+                obj.legacy_alias = False
+                fields.append("legacy_alias")
+            obj.save(update_fields=fields)
+        else:
+            super().save_model(request, obj, form, change)
 
 
 @admin.register(LanguageModel)
-class LanguageModelAdmin(admin.ModelAdmin):
-    form = LanguageModelForm
+class LanguageModelAdmin(CatalogAdmin):
+    form = CatalogModelForm
     list_display = ["name", "provider", "connection", "model_id", "enabled"]
-    list_filter = ["provider", "connection", "enabled"]
+    list_filter = ["provider", "connection", "enabled", "auto_thinking"]
     search_fields = ["name", "model_id"]
     autocomplete_fields = ["connection"]
+    readonly_fields = ["effective_capabilities", "discovery_data"]
+
+    @admin.display(description="قابلیت مؤثر و منبع اطلاعات")
+    def effective_capabilities(self, obj):
+        if not obj:
+            return "—"
+        facts, sources = resolve(obj)
+        rows = format_html_join(
+            "",
+            "<tr><th>{}</th><td>{}</td><td>{}</td></tr>",
+            (
+                (
+                    key,
+                    facts[key] if facts.get(key) is not None else "نامعلوم",
+                    sources.get(key, "—"),
+                )
+                for key in (
+                    *FLAGS,
+                    *LIMITS,
+                    "efforts",
+                    "default_effort",
+                    "wire",
+                    "reasoning_mandatory",
+                    "default_enabled",
+                    "router_budget_supported",
+                    "reasoning_toggle",
+                    "budget_tokens",
+                )
+            ),
+        )
+        return format_html("<table>{}</table>", rows)
+
+
+class ConnectionForm(forms.ModelForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["discovery_type"].required = False
+
+    def clean_discovery_type(self):
+        return self.cleaned_data["discovery_type"] or "compatible"
 
 
 @admin.register(ModelConnection)
-class ModelConnectionAdmin(admin.ModelAdmin):
-    list_display = ["name", "base_url", "api_key_env", "enabled"]
-    list_filter = ["enabled"]
+class ModelConnectionAdmin(CatalogAdmin):
+    form = ConnectionForm
+    list_display = [
+        "name",
+        "base_url",
+        "discovery_type",
+        "enabled",
+        "last_synced_at",
+        "sync_status",
+    ]
+    list_filter = ["enabled", "discovery_type"]
     search_fields = ["name"]
+    readonly_fields = [
+        "sync_started_at",
+        "last_synced_at",
+        "sync_status",
+        "sync_result",
+    ]
+
+    @admin.display(description="وضعیت همگام‌سازی")
+    def sync_status(self, obj):
+        result = obj.sync_result
+        return ERRORS.get(result.get("code")) or {
+            "ok": "کامل",
+            "partial": "بخشی از ردیف‌ها نامعتبر بود",
+            "running": "در حال اجرا",
+        }.get(result.get("status"), "هنوز اجرا نشده")
+
+    def get_urls(self):
+        return [
+            path(
+                "<int:pk>/sync-models/",
+                self.admin_site.admin_view(self.sync_view),
+                name="portal_connection_sync",
+            ),
+            *super().get_urls(),
+        ]
+
+    def sync_view(self, request, pk):
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+        obj = get_object_or_404(ModelConnection, pk=pk)
+        if not self.has_change_permission(
+            request, obj
+        ) or not self.admin_site.has_permission(request):
+            raise PermissionDenied
+        try:
+            result = sync_models(pk)
+            self.message_user(
+                request,
+                "افزوده: {added}، به‌روزشده: {updated}، بدون تغییر: {unchanged}، ردیف خطادار: {errors}، غایب: {absent}".format(
+                    **result
+                ),
+                messages.WARNING if result["errors"] else messages.SUCCESS,
+            )
+            if result["registry"] in ("stale", "unavailable"):
+                self.message_user(
+                    request,
+                    "Registry در دسترس نبود. نتیجهٔ استفاده از حافظهٔ محلی در گزارش ثبت شد.",
+                    messages.WARNING,
+                )
+        except DiscoveryError as exc:
+            self.message_user(request, str(exc), messages.ERROR)
+        return redirect("admin:portal_modelconnection_change", pk)

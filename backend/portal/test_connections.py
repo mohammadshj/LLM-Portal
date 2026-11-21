@@ -291,6 +291,7 @@ class ConnectionTests(TestCase):
                 "max_output_tokens",
                 "thinking_levels",
                 "thinking_default",
+                "reasoning_supported",
             },
         )
 

@@ -78,16 +78,31 @@ LanguageModel.objects.filter(connection__name=params["user"]).delete()
 ModelConnection.objects.filter(name=params["user"]).delete()
 `;
 
-async function until(check, message) {
-  const deadline = Date.now() + timeout;
+async function until(check, message, waitMs = timeout, intervalMs = 50) {
+  const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     if (await check()) return;
-    await pause(50);
+    await pause(intervalMs);
   }
   throw new Error(message);
 }
 
 async function run() {
+  await until(
+    async () => {
+      try {
+        const response = await fetch(base + "/api/health/", {
+          signal: AbortSignal.timeout(2000),
+        });
+        return response.ok;
+      } catch {
+        return false;
+      }
+    },
+    "Nginx and Django did not become ready",
+    60000,
+    500,
+  );
   const provider = spawn(
     "docker",
     [
@@ -96,6 +111,7 @@ async function run() {
       "-u",
       "-c",
       readFileSync(path.join(__dirname, "gated_provider.py"), "utf8"),
+      user,
     ],
     {
       cwd: root,
@@ -460,9 +476,62 @@ async function run() {
     } finally {
       await touch.close();
     }
+    // Exercise discovery against the same controlled HTTP server. Only this fixture's
+    // exact loopback origin is authorized in the short-lived management process.
+    django(`
+from django.test import override_settings
+from portal.discovery import sync_models
+from portal.models import ModelConnection
+conn = ModelConnection.objects.get(name=params["user"])
+with override_settings(DISCOVERY_LOCAL_ORIGINS={conn.base_url.removesuffix("/v1")}):
+    assert sync_models(conn.pk)["added"] == 2
+assert conn.models.filter(auto_thinking=True, enabled=True).count() == 0
+conn.models.filter(auto_thinking=True).update(enabled=True)
+`);
+    await page.reload();
+    await page.getByRole("button", { name: "انتخاب مدل", exact: true }).click();
+    for (const checkbox of await page
+      .getByRole("checkbox", { checked: true })
+      .all())
+      await checkbox.uncheck();
+    const unknown = page.getByRole("checkbox", {
+      name: user + " unknown",
+      exact: true,
+    });
+    await unknown.check();
+    assert.equal(await page.getByRole("combobox").count(), 0);
+    await unknown.uncheck();
+    await page
+      .getByRole("checkbox", { name: user + " catalog", exact: true })
+      .check();
+    await page.getByText("تنظیمات استدلال", { exact: true }).click();
+    const effort = page.getByRole("combobox", {
+      name: "شدت استدلال " + user + " catalog",
+    });
+    assert.deepEqual(
+      await effort
+        .locator("option")
+        .evaluateAll((nodes) => nodes.map((el) => el.value)),
+      ["", "minimal", "medium", "xhigh"],
+    );
+    await effort.selectOption("xhigh");
+    await page.getByRole("button", { name: "انجام شد" }).click();
+    const title = "مدل کشف‌شده";
+    await page.locator("#prompt").fill(title);
+    await page.locator("#prompt").press("Enter");
+    await until(
+      () =>
+        records.some(
+          (r) => r.task === title + "/catalog" && r.level === "xhigh",
+        ),
+      "Discovered effort missing from provider payload",
+    );
+    release(title + "/catalog");
+    await cards.filter({ hasText: "LAST[" + title + "/catalog]" }).waitFor();
+    await stop.waitFor({ state: "hidden" });
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: separate reasoning deltas, independent effort settings, reload, mobile and themes; streamed three independent chats through Nginx. Stop closed only B upstream. Three comparison models ran concurrently, and two successful replies survived their sibling's HTTP 500 and page reload.",
+      "PASS: separate reasoning deltas, independent effort settings, reload, mobile and themes; streamed three independent chats through Nginx. Stop closed only B upstream. Three comparison models ran concurrently; synchronized catalog efforts reached the provider through the live selector.",
     );
   } finally {
     try {

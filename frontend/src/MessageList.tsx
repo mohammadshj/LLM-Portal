@@ -15,7 +15,7 @@ import {
   UserRound,
 } from "lucide-react";
 import type { Message } from "./types";
-import { CopyButton, Dialog, number, thinkingNames } from "./ui";
+import { CopyButton, Dialog, number, thinkingName } from "./ui";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 const statusText = {
@@ -83,8 +83,7 @@ function ResponseBody({ m }: { m: Message }) {
         >
           <summary>
             <Activity /> فرایند استدلال مدل{" "}
-            {m.thinking_level &&
-              "· " + (thinkingNames[m.thinking_level] ?? m.thinking_level)}
+            {m.thinking_level && "· " + thinkingName(m.thinking_level)}
           </summary>
           <p dir="auto">{m.reasoning_content}</p>
         </details>

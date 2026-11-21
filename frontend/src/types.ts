@@ -9,6 +9,7 @@ export type Model = {
   name: string;
   provider: string;
   context_window: number;
+  reasoning_supported?: boolean | null;
   thinking_levels: string[];
   thinking_default: string;
 };

@@ -1,9 +1,15 @@
 from rest_framework import serializers
 
+from .capabilities import runtime_model
 from .models import Conversation, LanguageModel, Message
 
 
 class ModelSerializer(serializers.ModelSerializer):
+    reasoning_supported = serializers.BooleanField(read_only=True, allow_null=True)
+
+    def to_representation(self, instance):
+        return super().to_representation(runtime_model(instance))
+
     class Meta:
         model = LanguageModel
         fields = [
@@ -14,6 +20,7 @@ class ModelSerializer(serializers.ModelSerializer):
             "max_output_tokens",
             "thinking_levels",
             "thinking_default",
+            "reasoning_supported",
         ]
 
 
@@ -55,7 +62,9 @@ class ConversationSerializer(serializers.ModelSerializer):
 
 class SendSerializer(serializers.Serializer):
     thinking = serializers.DictField(
-        child=serializers.ChoiceField(choices=("off", "on", "low", "high", "max")),
+        child=serializers.RegexField(
+            r"\A[a-zA-Z0-9][a-zA-Z0-9_.-]{0,31}\Z", max_length=32
+        ),
         required=False,
     )
     request_id = serializers.UUIDField(required=False)

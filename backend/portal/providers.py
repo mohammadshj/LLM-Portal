@@ -115,13 +115,16 @@ def _target(model, messages, level=None):
                 "کلید این اتصال در محیط سرور تنظیم نشده است.", code="configuration"
             )
         headers["Authorization"] = f"Bearer {key}"
+    chosen = model.thinking_default if level is None else level
+    if chosen and chosen not in model.thinking_levels:
+        raise ProviderError("سطح استدلال برای این مدل مجاز نیست.", code="configuration")
     return (
         f"{connection.base_url}/chat/completions",
         headers,
         {
             "model": model.model_id,
             "messages": messages,
-            **parameters(model.thinking_contract, level or model.thinking_default),
+            **parameters(model.thinking_contract, chosen, model.thinking_budgets),
             model.output_parameter: model.max_output_tokens,
         },
     )
@@ -420,7 +423,7 @@ async def stream_complete(model, messages, level=None):
             model.reasoning_policy != "hidden"
             and (level or model.thinking_default) != "off"
         )
-        if model.connection.streaming_enabled:
+        if model.connection.streaming_enabled and getattr(model, "can_stream", True):
             payload["stream"] = True
             if model.stream_usage_option:
                 payload["stream_options"] = {"include_usage": True}

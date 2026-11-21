@@ -30,6 +30,30 @@ class Provider(BaseHTTPRequestHandler):
         self.wfile.write(f"data: {data}\n\n".encode())
         self.wfile.flush()
 
+    def do_GET(self):
+        if self.path != "/v1/models":
+            return self.send_error(404)
+        prefix = sys.argv[1]
+        rows = [
+            {
+                "id": "catalog",
+                "name": prefix + " catalog",
+                "supported_parameters": [
+                    {
+                        "name": "reasoning_effort",
+                        "options": ["minimal", "medium", "xhigh"],
+                    }
+                ],
+            },
+            {"id": "unknown", "name": prefix + " unknown"},
+        ]
+        body = json.dumps({"data": rows}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self):
         if self.path != "/v1/chat/completions":
             return self.send_error(404)

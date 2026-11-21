@@ -14,6 +14,7 @@ from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from .models import Account, Conversation, LanguageModel, Message, ModelUsage
+from .capabilities import runtime_model
 from .thinking import validate_capabilities
 from .tokens import Usage, input_counter
 
@@ -160,8 +161,12 @@ def _origin(model):
 
 def _admission_plan(chat, models, content, thinking):
     plans = []
-    for model in models:
+    for configured in models:
+        model = runtime_model(configured)
+        if not model.can_chat:
+            raise ValidationError("این مدل از تولید متن پشتیبانی نمی‌کند.")
         try:
+            validate_capabilities(configured)
             validate_capabilities(model)
         except ConfigurationError:
             raise ValidationError(

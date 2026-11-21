@@ -10,7 +10,7 @@ import {
   X,
 } from "lucide-react";
 import type { Model } from "./types";
-import { Dialog, number, thinkingNames, useMedia } from "./ui";
+import { Dialog, number, thinkingName, useMedia } from "./ui";
 
 type SelectorProps = {
   models: Model[];
@@ -73,7 +73,14 @@ function ModelSelector({
                   }
                 />
                 <bdi>{m.name}</bdi>
-                {m.provider === "demo" && <small>نمایشی</small>}
+                {m.provider === "demo" ? (
+                  <small>نمایشی</small>
+                ) : m.reasoning_supported === null ? (
+                  <small>استدلال نامعلوم</small>
+                ) : m.reasoning_supported === true &&
+                  !m.thinking_levels.length ? (
+                  <small>سطح قابل ارسال مشخص نشده</small>
+                ) : null}
               </label>
             );
           })}
@@ -94,9 +101,12 @@ function ModelSelector({
                   value={thinking?.[m.id] ?? m.thinking_default}
                   onChange={(e) => setThinking(m.id, e.target.value)}
                 >
+                  {!m.thinking_default && (
+                    <option value="">پیش‌فرض سرویس</option>
+                  )}
                   {m.thinking_levels.map((level) => (
                     <option value={level} key={level}>
-                      {thinkingNames[level] ?? level}
+                      {thinkingName(level)}
                     </option>
                   ))}
                 </select>

@@ -27,6 +27,8 @@ class RevisionTests(TestCase):
         )
         self.models = [
             LanguageModel.objects.create(
+                input_price_per_million_rial=0,
+                output_price_per_million_rial=0,
                 name=n,
                 model_id=n,
                 provider="openai",
@@ -63,6 +65,12 @@ class RevisionTests(TestCase):
         )
 
     def test_middle_edit_is_an_isolated_fork_with_independent_model_context(self):
+        from .billing import change_credit
+
+        change_credit(self.owner.pk, "grant", 10000, "branch-test", "test")
+        LanguageModel.objects.filter(pk__in=self.ids).update(
+            input_price_per_million_rial=1000000, output_price_per_million_rial=1000000
+        )
         first = self.send("first")["active_leaf"]
         old = self.send(
             "original", reasoning={str(m): {"effort": "high"} for m in self.ids}
@@ -104,6 +112,8 @@ class RevisionTests(TestCase):
         self.assertEqual(len(self.calls), 15)
         self.assertEqual(Account.objects.get(user=self.owner).tokens_used, total)
         self.assertEqual(BranchState(self.chat).path, [first, new, new_leaf])
+        self.assertEqual(self.owner.credit_entries.filter(kind="usage").count(), 15)
+        self.assertEqual(Account.objects.get(user=self.owner).credit_used_rial, 450)
 
     def test_original_and_nine_edits_have_ten_versions(self):
         ids = [self.send("zero", model_ids=self.ids[:1])["active_leaf"]]
@@ -196,7 +206,11 @@ class ConcurrentEditTests(TransactionTestCase):
         owner = get_user_model().objects.create_user("two-tabs")
         chat = Conversation.objects.create(user=owner, title="race")
         model = LanguageModel.objects.create(
-            provider="demo", model_id="demo", name="Demo"
+            input_price_per_million_rial=0,
+            output_price_per_million_rial=0,
+            provider="demo",
+            model_id="demo",
+            name="Demo",
         )
         original, jobs = reserve_turn(owner, chat, "original", [model.pk])
         finish_reply(jobs[0].reply.pk, "completed", "answer", usage=(10, 4))

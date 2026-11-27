@@ -56,7 +56,13 @@ class StreamHTTPTests(TransactionTestCase):
         self.client.force_login(self.user)
         self.csrf = self.client.get("/api/auth/csrf/").json()["csrfToken"]
         self.models = [
-            LanguageModel.objects.create(provider="demo", model_id=name, name=name)
+            LanguageModel.objects.create(
+                input_price_per_million_rial=0,
+                output_price_per_million_rial=0,
+                provider="demo",
+                model_id=name,
+                name=name,
+            )
             for name in ("fast", "medium", "slow")
         ]
         self.chats = [

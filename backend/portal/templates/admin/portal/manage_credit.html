@@ -1,0 +1,8 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<p>{{ ids|length }} حساب انتخاب شده است.</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}
+<input type="hidden" name="action" value="manage_credit">
+{% for id in ids %}<input type="hidden" name="{{ selection }}" value="{{ id }}">{% endfor %}
+<button type="submit" name="confirm_credit">ثبت تغییر اعتبار</button>
+</form>{% endblock %}

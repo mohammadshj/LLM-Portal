@@ -1,4 +1,4 @@
-import type { Message, ReasoningSettings } from "./types";
+import type { Credit, Message, ReasoningSettings } from "./types";
 import { request } from "./api";
 
 export type ChatEvent = {
@@ -25,6 +25,11 @@ export type ChatEvent = {
     | "total_tokens"
     | "usage_source"
   >;
+  billing?: Pick<
+    Message,
+    "free_tariff" | "cost_rial" | "billing_status" | "billing_source"
+  >;
+  credit?: Credit;
   status?: string;
 };
 

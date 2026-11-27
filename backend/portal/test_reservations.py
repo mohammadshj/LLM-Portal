@@ -1,3 +1,4 @@
+from .billing import change_credit
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier
@@ -23,10 +24,14 @@ class ReservationTests(TransactionTestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user("reservation")
         self.account = self.user.account
-        self.account.token_limit = 500
-        self.account.save(update_fields=["token_limit"])
+        change_credit(self.user.pk, "grant", 500, "setup", "test")
         self.model = LanguageModel.objects.create(
-            name="Model", provider="demo", model_id="m", max_output_tokens=100
+            input_price_per_million_rial=1000000,
+            output_price_per_million_rial=1000000,
+            name="Model",
+            provider="demo",
+            model_id="m",
+            max_output_tokens=100,
         )
         self.chats = [
             Conversation.objects.create(user=self.user, title=str(i)) for i in range(2)
@@ -60,7 +65,7 @@ class ReservationTests(TransactionTestCase):
             ("failed", None),
         )
         self.assertEqual(Message.objects.get(pk=jobs[0].reply.pk).reserved_tokens, 0)
-        self.assertFalse(ModelUsage.objects.exists())
+        self.assertEqual(ModelUsage.objects.get().billed_rial, 0)
         self.assertEqual(recover_reservations(), 0)
         self.reserve(self.chats[0])
 
@@ -87,8 +92,7 @@ class ReservationTests(TransactionTestCase):
 
     @skipUnlessDBFeature("has_select_for_update")
     def test_different_chats_cannot_claim_same_credit(self):
-        self.account.token_limit = 200  # One hold fits, two do not.
-        self.account.save()
+        change_credit(self.user.pk, "set", 200, "race", "test")
         barrier = Barrier(2)
 
         def worker(chat):

@@ -11,6 +11,8 @@ from asgiref.sync import async_to_sync, sync_to_async
 from django.http import StreamingHttpResponse
 from django.utils import timezone
 
+from .billing import balance
+from .models import Account, Message
 from .branches import UNSPECIFIED
 from .providers import ProviderError, stream_complete
 from .services import finish_reply, reserve_turn, should_cancel
@@ -123,12 +125,25 @@ class TurnStream:
             progress.reasoning_bytes,
             finished_at=timezone.now(),
         )
+        cost = (
+            await Message.objects.filter(pk=job.reply.pk)
+            .values("cost_rial", "billing_status", "billing_source")
+            .afirst()
+        )
+        if cost is not None:
+            cost["free_tariff"] = (
+                job.reply.input_price_snapshot_rial
+                == job.reply.output_price_snapshot_rial
+                == 0
+            )
         await self.emit(
             job,
             "model_error" if status == "failed" else "model_done",
             status=status,
             detail=error,
             elapsed_ms=elapsed_ms,
+            billing=cost,
+            credit=await self.credit(),
             usage=(
                 {
                     "input_tokens": progress.usage.incoming,
@@ -152,6 +167,10 @@ class TurnStream:
             for reader in readers:
                 reader.cancel()
 
+    async def credit(self):
+        account = await Account.objects.aget(user_id=self.turn.conversation.user_id)
+        return balance(account)
+
     async def events(self):
         self.started = True
         self.queue = asyncio.Queue(maxsize=32)
@@ -159,7 +178,7 @@ class TurnStream:
         pending_event = watcher = settled = None
         try:
             # The UUID and reservations already exist when this frame is delivered.
-            yield {"type": "start"}
+            yield {"type": "start", "credit": await self.credit()}
             for job in self.jobs:
                 yield (
                     {

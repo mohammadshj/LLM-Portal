@@ -5,17 +5,11 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  Activity,
-  Box,
-  ChartNoAxesColumn,
-  CircleCheck,
-  Expand,
-  RotateCcw,
-} from "lucide-react";
+import { Activity, Box, CircleCheck, Expand, RotateCcw } from "lucide-react";
 import { UserTurn, type VersionActions } from "./UserTurn";
 import type { Message } from "./types";
 import { CopyButton, Dialog, number } from "./ui";
+import { money } from "./credit";
 import { ResponseTime } from "./ResponseTime";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
@@ -28,50 +22,24 @@ const statusText = {
 };
 type Retry = (content: string, modelId?: number | null) => void;
 
-function TokenUsage({ m }: { m: Message }) {
-  if (!m.usage_source || m.usage_source === "none") return null;
-  function amount(field: "in" | "out" | "total", n?: number | null) {
-    if (n == null) return "نامعلوم";
-    const estimated =
-      m.usage_source === "estimated" ||
-      m.usage_source === "estimate_" + field ||
-      (field === "total" &&
-        (m.usage_source === "estimate_in" ||
-          m.usage_source === "estimate_out"));
-    return number(n) + (estimated ? " (تخمینی)" : " (گزارش سرویس)");
-  }
-  return (
-    <details className="usage">
-      <summary>
-        <ChartNoAxesColumn /> مصرف توکن
-        {m.total_tokens != null && " · " + number(m.total_tokens)}
-      </summary>
-      {m.usage_source === "unknown" ? (
-        <p>مصرف گزارش نشد.</p>
-      ) : (
-        <dl>
-          <dt>ورودی</dt>
-          <dd>{amount("in", m.input_tokens)}</dd>
-          <dt>خروجی</dt>
-          <dd>{amount("out", m.output_tokens)}</dd>
-          <dt>مجموع</dt>
-          <dd>{amount("total", m.total_tokens)}</dd>
-          {(m.thinking_level ||
-            Object.keys(m.reasoning_settings ?? {}).length > 0 ||
-            m.reasoning_tokens != null) && (
-            <>
-              <dt>سهم استدلال</dt>
-              <dd>
-                {m.reasoning_tokens == null
-                  ? "نامعلوم"
-                  : number(m.reasoning_tokens) + " (گزارش سرویس)"}
-              </dd>
-            </>
-          )}
-        </dl>
-      )}
-    </details>
-  );
+function ResponseCost({ m }: { m: Message }) {
+  const label =
+    m.status === "running"
+      ? "در حال محاسبه هزینه"
+      : m.cost_rial == null
+        ? m.billing_status === "review"
+          ? "هزینه نامشخص · نیازمند بررسی"
+          : "هزینه تاریخی ثبت نشده"
+        : m.free_tariff
+          ? "هزینه پاسخ: رایگان"
+          : "هزینه " +
+            money(m.cost_rial) +
+            (m.billing_source === "reported"
+              ? ""
+              : m.billing_source === "partial"
+                ? " · مصرف ناقص"
+                : " · برآوردی");
+  return <small className="response-cost">{label}</small>;
 }
 function ResponseBody({ m }: { m: Message }) {
   const [open, setOpen] = useState(m.status === "running");
@@ -185,7 +153,7 @@ const ResponseCard = memo(function ResponseCard({
       </div>
       <footer>
         {m.content && <CopyButton text={m.content} label="کپی پاسخ" />}
-        <TokenUsage m={m} />
+        <ResponseCost m={m} />
         {retry &&
           question &&
           (m.status === "failed" || m.status === "cancelled") && (
@@ -205,7 +173,7 @@ const ResponseCard = memo(function ResponseCard({
         >
           <div className="reader">
             <ResponseBody m={m} />
-            <TokenUsage m={m} />
+            <ResponseCost m={m} />
             {m.content && <CopyButton text={m.content} label="کپی پاسخ" />}
           </div>
         </Dialog>

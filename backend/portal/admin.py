@@ -7,11 +7,14 @@ from django.contrib.auth.models import User
 from django.core.exceptions import PermissionDenied
 from django.http import HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect
-from django.urls import path
+from django.urls import path, reverse
 from django.utils.html import format_html, format_html_join
 
 from .capabilities import FLAGS, LIMITS, resolve, runtime_model, reasoning_evidence
-from .reasoning_admin import CatalogModelForm, TITLES
+from .reasoning_admin import TITLES
+from . import billing
+from .billing_admin import PriceForm, money_field, manage_credit, ledger_link
+from django.db.models import Sum, Count, Max, Q, F
 from .discovery import sync_models
 from .discovery_http import DiscoveryError, ERRORS
 from .models import Account, LanguageModel, Message, ModelConnection
@@ -31,7 +34,12 @@ class PortalUserFields(forms.Form):
 
 
 class AddUserForm(PortalUserFields, AdminUserCreationForm):
-    pass
+    initial_credit = money_field(
+        "اعتبار اولیه (تومان، خالی برای پیش‌فرض)", required=False
+    )
+    credit_reason = forms.CharField(
+        label="دلیل تخصیص اعتبار", required=False, max_length=240
+    )
 
 
 class EditUserForm(PortalUserFields, UserChangeForm):
@@ -43,6 +51,30 @@ class EditUserForm(PortalUserFields, UserChangeForm):
         self.initial["token_limit"] = self.instance.account.token_limit
 
 
+class BalanceFilter(admin.SimpleListFilter):
+    title = "اعتبار آزاد"
+    parameter_name = "credit_state"
+
+    def lookups(self, request, model_admin):
+        return [("empty", "تمام‌شده"), ("low", "کمتر یا برابر ده درصد")]
+
+    def queryset(self, request, queryset):
+        if self.value() not in ("empty", "low"):
+            return queryset
+        rows = queryset.annotate(
+            available=F("account__credit_limit_rial")
+            - F("account__credit_used_rial")
+            - F("account__credit_reserved_rial")
+        )
+        return (
+            rows.filter(available=0)
+            if self.value() == "empty"
+            else rows.filter(
+                available__gt=0, available__lte=F("account__credit_limit_rial") / 10
+            )
+        )
+
+
 admin.site.unregister(User)
 
 
@@ -52,21 +84,119 @@ class PortalUserAdmin(UserAdmin):
     form = EditUserForm
     add_fieldsets = (
         *UserAdmin.add_fieldsets,
-        ("دسترسی و سهمیه", {"fields": ("role", "is_active", "token_limit")}),
+        (
+            "دسترسی و سهمیه",
+            {
+                "fields": (
+                    "role",
+                    "is_active",
+                    "initial_credit",
+                    "credit_reason",
+                    "token_limit",
+                )
+            },
+        ),
     )
     fieldsets = (
         UserAdmin.fieldsets[0],
         UserAdmin.fieldsets[1],
         (
             "دسترسی و سهمیه",
-            {"fields": ("role", "is_active", "token_limit", "consumed_tokens")},
+            {
+                "fields": (
+                    "role",
+                    "is_active",
+                    "token_limit",
+                    "consumed_tokens",
+                    "credit_details",
+                    "credit_history",
+                    "model_report",
+                )
+            },
         ),
         UserAdmin.fieldsets[3],
     )
-    readonly_fields = ("consumed_tokens", "last_login", "date_joined")
-    list_display = ("username", "email", "role_label", "is_active")
-    list_filter = ("is_active",)
+    actions = [manage_credit]
+    readonly_fields = (
+        "credit_details",
+        "credit_history",
+        "model_report",
+        "consumed_tokens",
+        "last_login",
+        "date_joined",
+    )
+    list_display = (
+        "username",
+        "email",
+        "role_label",
+        "is_active",
+        "credit_details",
+        "last_use",
+    )
+    list_filter = ("is_active", BalanceFilter)
     filter_horizontal = ()
+
+    def get_queryset(self, request):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("account")
+            .annotate(
+                last_usage=Max(
+                    "credit_entries__created_at", filter=Q(credit_entries__kind="usage")
+                )
+            )
+        )
+
+    @admin.display(description="آخرین مصرف")
+    def last_use(self, obj):
+        return obj.last_usage
+
+    @admin.display(description="اعتبار کل / مصرف / مانده / رزرو (تومان) · درصد مصرف")
+    def credit_details(self, obj):
+        data = billing.balance(obj.account)
+        amounts = " / ".join(
+            str(billing.toman(data[k]))
+            for k in (
+                "credit_limit_rial",
+                "credit_used_rial",
+                "credit_remaining_rial",
+                "credit_reserved_rial",
+            )
+        )
+        return f"{amounts} · {100 * obj.account.credit_used_rial // (obj.account.credit_limit_rial or 1)}٪"
+
+    @admin.display(description="تاریخچهٔ اعتبار")
+    def credit_history(self, obj):
+        return format_html(
+            '<a href="{}">تغییر اعتبار</a> · {}',
+            reverse("admin:portal_user_credit", args=[obj.pk]),
+            ledger_link(user_id=obj.pk),
+        )
+
+    def get_urls(self):
+        return [
+            path(
+                "<int:pk>/credit/",
+                self.admin_site.admin_view(self.credit_view),
+                name="portal_user_credit",
+            ),
+            *super().get_urls(),
+        ]
+
+    def credit_view(self, request, pk):
+        if not self.has_change_permission(request):
+            raise PermissionDenied
+        obj = get_object_or_404(User, pk=pk)
+        response = manage_credit(self, request, User.objects.filter(pk=obj.pk))
+        return response or redirect("admin:auth_user_change", obj.pk)
+
+    @admin.display(description="گزارش تفکیکی مدل‌ها و بازه زمانی")
+    def model_report(self, obj):
+        return format_html(
+            '<a href="/?billing=user-model-usage&amp;user={}">گزارش مصرف این کاربر</a>',
+            obj.pk,
+        )
 
     @admin.display(description="نقش")
     def role_label(self, obj):
@@ -81,6 +211,12 @@ class PortalUserAdmin(UserAdmin):
         if change:
             Account.objects.select_for_update().get(user_id=obj.pk)
         obj.is_staff = obj.is_superuser = form.cleaned_data["role"] == "admin"
+        if not change and form.cleaned_data.get("initial_credit") is not None:
+            obj.initial_credit_grant = (
+                billing.rial(form.cleaned_data["initial_credit"]),
+                form.cleaned_data.get("credit_reason") or "تخصیص هنگام ایجاد کاربر",
+                request.user,
+            )
         super().save_model(request, obj, form, change)
         limit = form.cleaned_data["token_limit"]
         if limit is not None and (not change or "token_limit" in form.changed_data):
@@ -93,6 +229,7 @@ class PortalUserAdmin(UserAdmin):
 
 @admin.register(Account)
 class AccountAdmin(admin.ModelAdmin):
+    fields = ["user", "tokens_used", "token_limit"]
     list_display = ["user", "token_limit", "tokens_used"]
     search_fields = ["user__username"]
     readonly_fields = ["user", "tokens_used"]
@@ -112,6 +249,9 @@ class CatalogAdmin(admin.ModelAdmin):
         # Do not write a stale catalog snapshot back when an operator edits another field.
         if change:
             fields = [f.name for f in obj._meta.fields if f.name in form.changed_data]
+            for side in ("input", "output"):
+                if side + "_toman" in form.changed_data:
+                    fields.append(side + "_price_per_million_rial")
             if getattr(form, "override_changed", False):
                 fields.append("reasoning_overrides")
             if (
@@ -128,13 +268,63 @@ class CatalogAdmin(admin.ModelAdmin):
 
 @admin.register(LanguageModel)
 class LanguageModelAdmin(CatalogAdmin):
-    form = CatalogModelForm
-    list_display = ["name", "provider", "connection", "model_id", "enabled"]
+    form = PriceForm
+    list_display = [
+        "name",
+        "provider",
+        "connection",
+        "model_id",
+        "enabled",
+        "prices",
+        "model_stats",
+    ]
     list_filter = ["provider", "connection", "enabled", "auto_thinking"]
     search_fields = ["name", "model_id"]
     autocomplete_fields = ["connection"]
     readonly_fields = ["effective_capabilities", "discovery_data", "profile_summary"]
+
+    def get_queryset(self, request):
+        return (
+            super()
+            .get_queryset(request)
+            .select_related("connection")
+            .annotate(
+                n_users=Count(
+                    "credittransaction__user",
+                    distinct=True,
+                    filter=Q(credittransaction__kind="usage"),
+                ),
+                n_requests=Count(
+                    "credittransaction", filter=Q(credittransaction__kind="usage")
+                ),
+                spend=Sum(
+                    "credittransaction__amount_rial",
+                    filter=Q(credittransaction__kind="usage"),
+                ),
+            )
+        )
+
+    @admin.display(description="ورودی / خروجی (تومان برای یک میلیون)")
+    def prices(self, obj):
+        return (
+            "تعرفه ناقص"
+            if None
+            in (obj.input_price_per_million_rial, obj.output_price_per_million_rial)
+            else f"{billing.toman(obj.input_price_per_million_rial)} / {billing.toman(obj.output_price_per_million_rial)}"
+        )
+
+    @admin.display(description="کاربران / درخواست / مصرف (تومان)")
+    def model_stats(self, obj):
+        return format_html(
+            '<a href="/?billing=user-model-usage&amp;model={}">{} / {} / {}</a>',
+            obj.pk,
+            obj.n_users,
+            obj.n_requests,
+            billing.toman(-(obj.spend or 0)),
+        )
+
     fieldsets = [
+        ("تعرفه فروش", {"fields": ["input_toman", "output_toman"]}),
         (None, {"fields": ["name", "provider", "connection", "model_id", "enabled"]}),
         (
             "تنظیم استدلال (Reasoning Configuration)",

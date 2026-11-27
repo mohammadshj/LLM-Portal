@@ -227,7 +227,11 @@ class ProfileTests(TestCase):
             },
         ]
         self.sync(rows)
-        self.conn.models.update(enabled=True)
+        self.conn.models.update(
+            enabled=True,
+            input_price_per_million_rial=0,
+            output_price_per_million_rial=0,
+        )
         ids = [self.model(r["id"]).pk for r in rows]
         settings = {
             str(k): v
@@ -345,7 +349,13 @@ class ProfileTests(TestCase):
             return fields
 
         fields = data()
-        fields.update(pin=["efforts", "wire"], efforts=["custom"], wire="router_effort")
+        fields.update(
+            pin=["efforts", "wire"],
+            efforts=["custom"],
+            wire="router_effort",
+            input_toman="2.1",
+            output_toman="0",
+        )
         response = self.client.post(url, fields)
         self.assertEqual(
             response.status_code,
@@ -355,6 +365,10 @@ class ProfileTests(TestCase):
         model.refresh_from_db()
         self.assertEqual(
             model.reasoning_overrides, {"efforts": ["custom"], "wire": "router_effort"}
+        )
+        self.assertEqual(
+            (model.input_price_per_million_rial, model.output_price_per_million_rial),
+            (21, 0),
         )
         fields = data()
         fields["pin"] = ["wire"]

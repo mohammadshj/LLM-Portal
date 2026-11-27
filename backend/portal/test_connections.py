@@ -62,10 +62,20 @@ class ConnectionTests(TestCase):
             api_key_env="LLM_SECOND_API_KEY",
         )
         self.model_a = LanguageModel.objects.create(
-            name="A", provider="openai", model_id="shared-id", connection=self.a
+            input_price_per_million_rial=0,
+            output_price_per_million_rial=0,
+            name="A",
+            provider="openai",
+            model_id="shared-id",
+            connection=self.a,
         )
         self.model_b = LanguageModel.objects.create(
-            name="B", provider="openai", model_id="shared-id", connection=self.b
+            input_price_per_million_rial=0,
+            output_price_per_million_rial=0,
+            name="B",
+            provider="openai",
+            model_id="shared-id",
+            connection=self.b,
         )
         self.messages = [{"role": "user", "content": "hello"}]
 
@@ -155,7 +165,12 @@ class ConnectionTests(TestCase):
 
     def test_multiple_models_share_one_connection(self):
         extra = LanguageModel.objects.create(
-            name="other", provider="openai", model_id="other-id", connection=self.a
+            input_price_per_million_rial=0,
+            output_price_per_million_rial=0,
+            name="other",
+            provider="openai",
+            model_id="other-id",
+            connection=self.a,
         )
         seen = []
 
@@ -293,6 +308,8 @@ class ConnectionTests(TestCase):
                 "thinking_default",
                 "reasoning_supported",
                 "reasoning_profile",
+                "input_price_per_million_rial",
+                "output_price_per_million_rial",
             },
         )
 
@@ -335,8 +352,8 @@ class ConnectionTests(TestCase):
         self.assertEqual(
             ModelUsage.objects.get(user=user, model=self.model_a).input_tokens, 10
         )
-        self.assertFalse(
-            ModelUsage.objects.filter(user=user, model=self.model_b).exists()
+        self.assertEqual(
+            ModelUsage.objects.get(user=user, model=self.model_b).billed_rial, 0
         )
 
 
@@ -414,6 +431,12 @@ class ConnectionMigrationTests(TransactionTestCase):
         )
         current_user = get_user_model().objects.get(pk=user.pk)
         current_chat = Conversation.objects.get(pk=chat.pk)
+        legacy = LanguageModel.objects.get(pk=model.pk)
+        self.assertIsNone(legacy.input_price_per_million_rial)
+        self.assertIsNone(reply.cost_rial)
+        LanguageModel.objects.filter(pk=model.pk).update(
+            input_price_per_million_rial=0, output_price_per_million_rial=0
+        )
         _, jobs = reserve_turn(current_user, current_chat, "next", [model.pk])
         self.assertEqual(
             [m["content"] for m in jobs[0].messages], ["answered", "ok", "next"]

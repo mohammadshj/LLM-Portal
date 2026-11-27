@@ -37,6 +37,8 @@ class ThinkingTests(TestCase):
             name="test", base_url="https://test.example/v1", api_key_env=""
         )
         self.model = LanguageModel.objects.create(
+            input_price_per_million_rial=0,
+            output_price_per_million_rial=0,
             name="K",
             provider="openai",
             connection=self.connection,

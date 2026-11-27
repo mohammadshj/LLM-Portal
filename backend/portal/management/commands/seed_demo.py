@@ -11,6 +11,11 @@ class Command(BaseCommand):
             LanguageModel.objects.get_or_create(
                 provider="demo",
                 model_id=name,
-                defaults={"name": name, "max_output_tokens": 2048},
+                defaults={
+                    "name": name,
+                    "max_output_tokens": 2048,
+                    "input_price_per_million_rial": 0,
+                    "output_price_per_million_rial": 0,
+                },
             )
         self.stdout.write("Demo models available.")

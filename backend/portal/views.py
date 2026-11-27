@@ -16,6 +16,7 @@ from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .billing import balance
 from .branches import BranchState, UNSPECIFIED
 from .models import Account, Conversation, LanguageModel, Message, ModelUsage
 from .permissions import IsPortalAdmin, is_portal_admin
@@ -74,6 +75,7 @@ def me(request):
             "is_staff": is_portal_admin(request.user),
             "token_limit": account.token_limit,
             "tokens_used": account.tokens_used,
+            **balance(account),
         }
     )
 
@@ -249,4 +251,14 @@ def usage(request):
                 )
             ),
         }
+    )
+
+
+@api_view(["POST"])
+def estimate(request, pk=None):
+    chat = owned_conversation(request, pk) if pk is not None else None
+    data = SendSerializer(data=request.data)
+    data.is_valid(raise_exception=True)
+    return Response(
+        reserve_turn(request.user, chat, estimate=True, **data.validated_data)
     )

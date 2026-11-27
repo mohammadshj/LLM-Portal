@@ -11,6 +11,7 @@ class PortalAdminLoginForm(AdminAuthenticationForm):
 
 
 class PortalAdminSite(AdminSite):
+    index_template = "admin/portal/finance_index.html"
     login_form = PortalAdminLoginForm
 
     def has_permission(self, request):

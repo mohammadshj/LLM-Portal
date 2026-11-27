@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   ChartColumn,
@@ -15,7 +15,9 @@ import { MessageList } from "./MessageList";
 import { ManageConversation, Sidebar } from "./Sidebar";
 import { ThemeToggle } from "./ThemeToggle";
 import { Thread, Welcome } from "./Thread";
-import type { User, Usage, Model, Conversation } from "./types";
+import { applyCredit, priced } from "./credit";
+import { CostEstimate } from "./CostEstimate";
+import type { User, Model, Conversation } from "./types";
 import { Dialog, useMedia } from "./ui";
 import { UsageReport } from "./UsageReport";
 import { ready } from "./reasoning";
@@ -40,7 +42,9 @@ export function Workspace({
   const [retryModels, setRetryModels] = useState(0);
   const [error, setError] = useState("");
   const [quotaStale, setQuotaStale] = useState(false);
-  const [report, setReport] = useState<Usage | null>(null);
+  const [report, setReport] = useState(
+    new URLSearchParams(location.search).has("billing"),
+  );
   const [loggingOut, setLoggingOut] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [drawer, setDrawer] = useState(false);
@@ -50,7 +54,7 @@ export function Workspace({
   const history = useHistory();
   const positions = useRef(new Map<number, { top: number; follow: boolean }>());
   const usageVersion = useRef(0);
-  const reportVersion = useRef(0);
+
   const life = useRef<AbortController | null>(null);
   useEffect(() => {
     const controller = new AbortController();
@@ -79,7 +83,7 @@ export function Workspace({
     const timer = setTimeout(() => setNotice(""), 3000);
     return () => clearTimeout(timer);
   }, [notice]);
-  async function refreshUsage() {
+  const refreshUsage = useCallback(async () => {
     const version = ++usageVersion.current;
     try {
       const data = await api<User>(
@@ -89,20 +93,34 @@ export function Workspace({
         life.current?.signal,
       );
       if (version === usageVersion.current) {
-        setUser(data);
+        setUser((old) => applyCredit(old, data));
         setQuotaStale(false);
       }
     } catch {
       if (version === usageVersion.current && !life.current?.signal.aborted)
         setQuotaStale(true);
     }
-  }
-  const chats = useChats(history.refresh, refreshUsage);
+  }, []);
+  useEffect(() => {
+    const refresh = () => {
+      if (!document.hidden) void refreshUsage();
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [refreshUsage]);
+  const chats = useChats(history.refresh, refreshUsage, (snapshot) =>
+    setUser((old) => applyCredit(old, snapshot)),
+  );
   const { activeId, chat, messages } = chats;
   const chatError = chat.readError || chat.error;
   const active = chat.detail ?? history.items.find((c) => c.id === activeId);
   const processing = chats.busy(activeId);
-  const selected = chat.selection ?? models.slice(0, 1).map((m) => m.id);
+  const selected =
+    chat.selection ??
+    models
+      .filter(priced)
+      .slice(0, 1)
+      .map((m) => m.id);
   const selectedModels = selected
     .map((id) => models.find((m) => m.id === id))
     .filter((m): m is Model => !!m);
@@ -111,20 +129,14 @@ export function Workspace({
     positions.current.set(activeId, { top: current?.top ?? 0, follow: false });
   }
   function change(action: () => void) {
-    ++reportVersion.current;
     setDrawer(false);
-    setReport(null);
+    setReport(false);
     setError("");
     action();
   }
-  async function openReport() {
-    const version = ++reportVersion.current;
-    try {
-      const data = await api<Usage>("usage/");
-      if (version === reportVersion.current) setReport(data);
-    } catch (e) {
-      if (version === reportVersion.current) setError((e as Error).message);
-    }
+  function openReport() {
+    setReport(true);
+    setDrawer(false);
   }
   async function logout() {
     setLoggingOut(true);
@@ -213,16 +225,16 @@ export function Workspace({
                 <Activity /> در حال پاسخ
               </span>
             )}
-            {user.is_staff && (
-              <>
-                <button
-                  className="icon"
-                  onClick={openReport}
-                  aria-label="گزارش مصرف"
-                  title="گزارش مصرف"
-                >
-                  <ChartColumn />
-                </button>
+            <>
+              <button
+                className="icon"
+                onClick={openReport}
+                aria-label="گزارش مصرف"
+                title="گزارش مصرف"
+              >
+                <ChartColumn />
+              </button>
+              {user.is_staff && (
                 <a
                   className="icon"
                   href="/admin/"
@@ -231,8 +243,8 @@ export function Workspace({
                 >
                   <Settings2 />
                 </a>
-              </>
-            )}
+              )}
+            </>
             <ThemeToggle theme={theme} toggle={toggle} />
           </div>
         </header>
@@ -255,14 +267,14 @@ export function Workspace({
         )}
         {quotaStale && (
           <div className="banner">
-            آخرین سهمیهٔ تأییدشده نمایش داده می‌شود.{" "}
+            آخرین اعتبارٔ تأییدشده نمایش داده می‌شود.{" "}
             <button onClick={refreshUsage}>به‌روزرسانی</button>
           </div>
         )}
         {report ? (
           <div className="report-wrap">
             <button onClick={() => change(() => {})}>بازگشت به گفتگو</button>
-            <UsageReport report={report} />
+            <UsageReport user={user} />
           </div>
         ) : (
           <>
@@ -314,6 +326,14 @@ export function Workspace({
                 />
               )}
             </Thread>
+            <CostEstimate
+              chatId={activeId}
+              prompt={chat.prompt}
+              models={selectedModels}
+              thinking={chat.thinking}
+              leaf={chat.detail?.active_leaf}
+              busy={processing || !!chat.loading}
+            />
             <ChatComposer
               key={"composer-" + activeId}
               models={models}
@@ -334,7 +354,15 @@ export function Workspace({
                 )
               }
               modelsLoading={modelsLoading}
-              exhausted={!quotaStale && user.tokens_used >= user.token_limit}
+              exhausted={
+                !quotaStale &&
+                user.credit_available_rial === 0 &&
+                selectedModels.some(
+                  (m) =>
+                    m.input_price_per_million_rial ||
+                    m.output_price_per_million_rial,
+                )
+              }
               send={() => void chats.send(selectedModels)}
               stop={chats.stop}
             />

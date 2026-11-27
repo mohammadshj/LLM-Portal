@@ -15,6 +15,22 @@ from .validators import validate_connection_url, validate_key_env
 
 class Account(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    credit_limit_rial = models.PositiveBigIntegerField(default=0, editable=False)
+    credit_used_rial = models.PositiveBigIntegerField(default=0, editable=False)
+    credit_reserved_rial = models.PositiveBigIntegerField(default=0, editable=False)
+    credit_version = models.PositiveBigIntegerField(default=0, editable=False)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(
+                    credit_limit_rial__gte=models.F("credit_used_rial")
+                    + models.F("credit_reserved_rial")
+                ),
+                name="credit_covers_spend_and_holds",
+            )
+        ]
+
     token_limit = models.PositiveBigIntegerField(default=100000)
     tokens_used = models.PositiveBigIntegerField(default=0, editable=False)
 
@@ -25,7 +41,11 @@ class Account(models.Model):
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_user_account(sender, instance, created, raw, using, **kwargs):
     if created and not raw:
-        Account.objects.using(using).get_or_create(user_id=instance.pk)
+        from .billing import initialize_account
+
+        initialize_account(
+            instance.pk, using, getattr(instance, "initial_credit_grant", None)
+        )
 
 
 class ModelConnection(models.Model):
@@ -88,6 +108,12 @@ class ModelConnection(models.Model):
 
 
 class LanguageModel(models.Model):
+    input_price_per_million_rial = models.PositiveBigIntegerField(
+        null=True, blank=True, validators=[MaxValueValidator(10**12)]
+    )
+    output_price_per_million_rial = models.PositiveBigIntegerField(
+        null=True, blank=True, validators=[MaxValueValidator(10**12)]
+    )
     name = models.CharField(max_length=100)
     provider = models.CharField(
         max_length=20, choices=[("demo", "نمایشی"), ("openai", "OpenAI-compatible")]
@@ -249,6 +275,12 @@ class Message(models.Model):
     status = models.CharField(max_length=12, default="completed")
     error = models.CharField(max_length=240, blank=True)
     usage_source = models.CharField(max_length=12, default="none")
+    reserved_credit_rial = models.PositiveBigIntegerField(default=0)
+    input_price_snapshot_rial = models.PositiveBigIntegerField(null=True)
+    output_price_snapshot_rial = models.PositiveBigIntegerField(null=True)
+    cost_rial = models.PositiveBigIntegerField(null=True)
+    billing_status = models.CharField(max_length=16, default="historical")
+    billing_source = models.CharField(max_length=16, default="unknown")
     reserved_tokens = models.PositiveBigIntegerField(default=0)
     # Saved at admission so later model edits cannot change an in-flight budget.
     input_bound = models.PositiveIntegerField(default=0)
@@ -298,6 +330,9 @@ class ModelUsage(models.Model):
     input_tokens = models.PositiveBigIntegerField(default=0)
     output_tokens = models.PositiveBigIntegerField(default=0)
 
+    billed_rial = models.PositiveBigIntegerField(default=0)
+    billed_requests = models.PositiveBigIntegerField(default=0)
+
     # Part of reported totals whose input/output breakdown was unavailable.
     unsplit_tokens = models.PositiveBigIntegerField(default=0)
 
@@ -306,4 +341,89 @@ class ModelUsage(models.Model):
             models.UniqueConstraint(
                 fields=["user", "model"], name="unique_user_model_usage"
             )
+        ]
+
+
+class BillingPolicy(models.Model):
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    default_credit_rial = models.PositiveBigIntegerField(default=0, editable=False)
+
+    class Meta:
+        verbose_name = verbose_name_plural = "اعتبار پیش‌فرض کاربران جدید"
+        constraints = [
+            models.CheckConstraint(condition=models.Q(id=1), name="one_billing_policy")
+        ]
+
+    def __str__(self):
+        return self._meta.verbose_name
+
+
+class PostingQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError("برای اصلاح دفتر یک تراکنش جدید ثبت کنید.")
+
+    def delete(self):
+        raise ValidationError("حذف تراکنش مالی مجاز نیست.")
+
+
+class CreditTransaction(models.Model):
+    """Immutable posting and durable, content-free usage fact for a single model reply."""
+
+    objects = PostingQuerySet.as_manager()
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("برای اصلاح دفتر یک تراکنش جدید ثبت کنید.")
+        kwargs["force_insert"] = True
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("حذف تراکنش مالی مجاز نیست.")
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="credit_entries",
+    )
+    model = models.ForeignKey(LanguageModel, null=True, on_delete=models.PROTECT)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    kind = models.CharField(
+        max_length=12,
+        choices=[
+            (k, k) for k in ("grant", "usage", "refund", "adjustment", "migration")
+        ],
+    )
+    operation = models.CharField(max_length=12, blank=True)
+    requested_rial = models.PositiveBigIntegerField(null=True)
+    reference = models.CharField(max_length=100, unique=True)
+    amount_rial = models.BigIntegerField()
+    balance_after_rial = models.PositiveBigIntegerField()
+    description = models.CharField(max_length=240, blank=True)
+    refund_of = models.ForeignKey(
+        "self", null=True, on_delete=models.PROTECT, related_name="refunds"
+    )
+    request_id = models.UUIDField(null=True)
+    reply_id = models.PositiveBigIntegerField(null=True, unique=True)
+    status = models.CharField(max_length=12, blank=True)
+    source = models.CharField(max_length=16, blank=True)
+    input_price = models.PositiveBigIntegerField(null=True)
+    output_price = models.PositiveBigIntegerField(null=True)
+    reserved_rial = models.PositiveBigIntegerField(default=0)
+    calculated_rial = models.PositiveBigIntegerField(null=True)
+    uncovered_rial = models.PositiveBigIntegerField(default=0)
+    input_tokens = models.PositiveIntegerField(null=True)
+    output_tokens = models.PositiveIntegerField(null=True)
+    reasoning_tokens = models.PositiveIntegerField(null=True)
+    total_tokens = models.PositiveBigIntegerField(null=True)
+    unsplit_tokens = models.PositiveBigIntegerField(default=0)
+
+    class Meta:
+        verbose_name = "تراکنش اعتبار"
+        verbose_name_plural = "دفتر تراکنش‌های اعتبار"
+        indexes = [
+            models.Index(fields=["user", "model", "created_at"]),
+            models.Index(fields=["kind", "created_at"]),
         ]

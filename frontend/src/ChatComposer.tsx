@@ -9,6 +9,7 @@ import {
   Square,
   X,
 } from "lucide-react";
+import { money, priced } from "./credit";
 import { ReasoningControls } from "./ReasoningControls";
 import { ready } from "./reasoning";
 import type { Model, ReasoningSettings } from "./types";
@@ -67,7 +68,7 @@ function ModelSelector({
                   type="checkbox"
                   checked={checked}
                   aria-label={m.name}
-                  disabled={!checked && selected.length >= 3}
+                  disabled={!checked && (selected.length >= 3 || !priced(m))}
                   onChange={() =>
                     choose(
                       checked
@@ -77,6 +78,14 @@ function ModelSelector({
                   }
                 />
                 <bdi>{m.name}</bdi>
+                <small>
+                  {priced(m)
+                    ? "برای یک میلیون توکن · ورودی " +
+                      money(m.input_price_per_million_rial!) +
+                      "، خروجی " +
+                      money(m.output_price_per_million_rial!)
+                    : "تعرفه تعیین نشده"}
+                </small>
                 {m.provider === "demo" ? (
                   <small>نمایشی</small>
                 ) : m.reasoning_supported === null ? (
@@ -97,7 +106,7 @@ function ModelSelector({
               <SlidersHorizontal /> تنظیمات استدلال
             </summary>
             <p className="muted">
-              سطح بالاتر می‌تواند زمان پاسخ و مصرف توکن را افزایش دهد.
+              سطح بالاتر می‌تواند زمان پاسخ و هزینه را افزایش دهد.
             </p>
             {advanced.map((m) => (
               <ReasoningControls
@@ -251,7 +260,7 @@ export function ChatComposer(
       </form>
       <div className="composer-note">
         {props.exhausted
-          ? "سهمیهٔ توکن در دسترس نیست."
+          ? "اعتبار آزاد برای مدل انتخابی کافی نیست."
           : !models.length && !props.modelsLoading
             ? "مدل فعالی در دسترس نیست. با مدیر سامانه تماس بگیرید."
             : processing

@@ -21,6 +21,8 @@ class ModelSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "provider",
+            "input_price_per_million_rial",
+            "output_price_per_million_rial",
             "context_window",
             "max_output_tokens",
             "thinking_levels",
@@ -31,6 +33,11 @@ class ModelSerializer(serializers.ModelSerializer):
 
 
 class MessageSerializer(serializers.ModelSerializer):
+    free_tariff = serializers.SerializerMethodField()
+
+    def get_free_tariff(self, obj):
+        return obj.input_price_snapshot_rial == obj.output_price_snapshot_rial == 0
+
     elapsed_ms = serializers.IntegerField(read_only=True, allow_null=True)
 
     model_name = serializers.CharField(
@@ -51,6 +58,10 @@ class MessageSerializer(serializers.ModelSerializer):
             "error",
             "usage_source",
             "elapsed_ms",
+            "cost_rial",
+            "free_tariff",
+            "billing_status",
+            "billing_source",
             "thinking_level",
             "reasoning_settings",
             "reasoning_content",

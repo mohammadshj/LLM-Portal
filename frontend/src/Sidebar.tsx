@@ -1,3 +1,4 @@
+import { money } from "./credit";
 import { useState } from "react";
 import {
   Activity,
@@ -16,35 +17,34 @@ import type { useHistory } from "./useHistory";
 import { Brand, Dialog, number } from "./ui";
 
 export function Quota({ user }: { user: User }) {
-  const left = Math.max(0, user.token_limit - user.tokens_used);
-  const percent = user.token_limit
-    ? Math.min(100, Math.round((100 * user.tokens_used) / user.token_limit))
+  const percent = user.credit_limit_rial
+    ? Math.round((100 * user.credit_used_rial) / user.credit_limit_rial)
     : 0;
+  const low = user.credit_available_rial <= user.credit_limit_rial / 10;
   return (
-    <section
-      className="quota"
-      aria-label="سهمیهٔ توکن"
-      data-warning={!left || percent >= 85}
-    >
+    <section className="quota" aria-label="اعتبار حساب" data-warning={low}>
       <div className="line">
         <strong>
-          <Wallet /> سهمیهٔ توکن
+          <Wallet /> اعتبار قابل استفاده
         </strong>
-        <b>{number(percent)}٪</b>
+        <b>{money(user.credit_available_rial)}</b>
       </div>
-      <progress aria-label="درصد مصرف سهمیه" value={percent} max={100} />
+      <progress aria-label="درصد اعتبار مصرف‌شده" value={percent} max={100} />
       <div>
-        {number(user.tokens_used)} از {number(user.token_limit)} توکن
+        مصرف‌شده {money(user.credit_used_rial)} · {number(percent)}٪
       </div>
-      <small>
-        {!user.token_limit
-          ? "سهمیه‌ای تخصیص نیافته است"
-          : !left
-            ? "سهمیه تمام شده است"
-            : (percent >= 85 ? "نزدیک سقف سهمیه · " : "") +
-              number(left) +
-              " توکن باقی‌مانده"}
-      </small>
+      <div>اعتبار کل {money(user.credit_limit_rial)}</div>
+      {user.credit_reserved_rial > 0 && (
+        <small>در حال پردازش {money(user.credit_reserved_rial)}</small>
+      )}
+      {user.credit_remaining_rial === 0 ? (
+        <small>
+          اعتبار شما به پایان رسیده است. برای افزایش اعتبار با مدیر سیستم تماس
+          بگیرید.
+        </small>
+      ) : (
+        low && <small>اعتبار قابل استفاده کم است.</small>
+      )}
     </section>
   );
 }

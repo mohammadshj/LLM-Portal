@@ -1,3 +1,4 @@
+from .billing import change_credit
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -106,7 +107,11 @@ class UserAdminTests(TestCase):
             user_id=portal.session["_auth_user_id"], title="quota"
         )
         model = LanguageModel.objects.create(
-            name="demo", provider="demo", model_id="demo"
+            input_price_per_million_rial=1000000,
+            output_price_per_million_rial=1000000,
+            name="demo",
+            provider="demo",
+            model_id="demo",
         )
         self.assertEqual(
             portal.post(
@@ -241,7 +246,14 @@ class UserAdminTests(TestCase):
             ).status_code,
             200,
         )
-        model = LanguageModel.objects.create(provider="demo", name="demo", model_id="d")
+        model = LanguageModel.objects.create(
+            input_price_per_million_rial=1000000,
+            output_price_per_million_rial=1000000,
+            provider="demo",
+            name="demo",
+            model_id="d",
+        )
+        change_credit(user.pk, "grant", 10000, "setup", "test")
         chat = Conversation.objects.create(user=user, title="retained")
         url = f"/api/conversations/{chat.pk}/"
         payload = {"content": "hello", "model_ids": [model.pk]}

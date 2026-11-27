@@ -1,3 +1,4 @@
+import type { Credit } from "./types";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { ready, selectionFor } from "./reasoning";
@@ -88,6 +89,7 @@ function applyEvent(live: LiveTurn, event: ChatEvent): LiveTurn {
           return {
             ...m,
             ...event.usage,
+            ...event.billing,
             status: event.status === "cancelled" ? "cancelled" : "failed",
             elapsed_ms: event.elapsed_ms,
             error: event.detail,
@@ -96,6 +98,7 @@ function applyEvent(live: LiveTurn, event: ChatEvent): LiveTurn {
           return {
             ...m,
             ...event.usage,
+            ...event.billing,
             elapsed_ms: event.elapsed_ms,
             status: event.status === "cancelled" ? "cancelled" : "completed",
           };
@@ -109,6 +112,7 @@ function applyEvent(live: LiveTurn, event: ChatEvent): LiveTurn {
 export function useChats(
   onCreated: (c: Conversation) => void,
   onSettled: () => void,
+  onCredit: (credit: Credit) => void,
 ) {
   // Draft IDs are negative until POST /conversations/ allocates a database ID.
   const [activeId, setActiveId] = useState(-1);
@@ -353,6 +357,7 @@ export function useChats(
         },
         run.controller.signal,
         (event) => {
+          if (mounted.current && event.credit) onCredit(event.credit);
           if (event.type === "start") {
             run.started = true;
             if (revision)

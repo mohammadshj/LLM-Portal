@@ -40,10 +40,12 @@ function django(code, params = {}) {
 const prepare = `
 from django.contrib.auth import get_user_model
 from portal.models import ModelConnection, LanguageModel
-get_user_model().objects.create_user(params["user"], password=params["password"])
+from portal.billing import change_credit
+owner = get_user_model().objects.create_user(params["user"], password=params["password"])
+change_credit(owner.pk,"grant",5000000,"test","Browser fixture")
 conn = ModelConnection.objects.create(name=params["user"], base_url="http://127.0.0.1:%d/v1" % params["port"], api_key_env="")
 for model in ("fast", "slow", "failure"):
-    LanguageModel.objects.create(name=params["user"]+" "+model, provider="openai", connection=conn, model_id=model,
+    LanguageModel.objects.create(input_price_per_million_rial=1000000,output_price_per_million_rial=2000000,name=params["user"]+" "+model, provider="openai", connection=conn, model_id=model,
         thinking_contract={"fast":"toggle_effort","slow":"effort","failure":"budget_tokens"}[model],
         thinking_levels=["off","low","high","max"] if model=="fast" else (["brief","deep"] if model=="failure" else ["low","high","max"]),
         thinking_budgets={"brief":64,"deep":256} if model=="failure" else {},
@@ -64,6 +66,12 @@ assert all(m.response_duration_ms is not None for m in rows)
 assert all(m.reserved_tokens == 0 for m in rows)
 account = Account.objects.get(user__username=params["user"])
 assert account.tokens_used == sum(m.total_tokens or 0 for m in rows)
+from portal.models import CreditTransaction
+postings=CreditTransaction.objects.filter(user=account.user, kind="usage")
+assert postings.count()==5
+assert account.credit_reserved_rial==0
+assert account.credit_used_rial==sum(m.cost_rial or 0 for m in rows)==sum(-p.amount_rial for p in postings)
+assert actual[a,"fast"].cost_rial==33
 for m in rows:
     if m.status == "completed":
         assert m.total_tokens == 20
@@ -75,6 +83,9 @@ for m in rows:
 const cleanup = `
 from django.contrib.auth import get_user_model
 from portal.models import LanguageModel, ModelConnection
+from portal.models import CreditTransaction
+# Test-only teardown of postings for the disposable randomized fixture.
+CreditTransaction._base_manager.filter(user__username=params["user"]).delete()
 get_user_model().objects.filter(username=params["user"]).delete()
 LanguageModel.objects.filter(connection__name=params["user"]).delete()
 ModelConnection.objects.filter(name=params["user"]).delete()
@@ -291,6 +302,10 @@ async function run() {
       B = "گفتگو ب",
       C = "گفتگو ج";
     await start(A, ["fast", "slow", "failure"], "low");
+    await page
+      .locator(".quota")
+      .getByText(/در حال پردازش/)
+      .waitFor();
     await until(
       () =>
         ["fast", "slow", "failure"].every((model) =>
@@ -553,9 +568,10 @@ async function run() {
     await rich.getByRole("button", { name: "گسترش پاسخ" }).click();
     await page.getByRole("dialog").locator("table").waitFor();
     await page.keyboard.press("Escape");
-    const usage = rich.locator(".usage");
-    await usage.locator("summary").click();
-    assert.ok((await usage.innerText()).includes("۲۰ (گزارش سرویس)"));
+    assert.ok(
+      (await rich.locator(".response-cost").innerText()).includes("۳٫۳ تومان"),
+    );
+    assert.ok(!(await rich.innerText()).includes("مصرف توکن"));
     await page
       .getByRole("button", { name: "مدیریت گفتگو " + D, exact: true })
       .click();
@@ -649,7 +665,7 @@ conn = ModelConnection.objects.get(name=params["user"])
 with override_settings(DISCOVERY_LOCAL_ORIGINS={conn.base_url.removesuffix("/v1")}):
     assert sync_models(conn.pk)["added"] == 5
 assert conn.models.filter(auto_thinking=True, enabled=True).count() == 0
-conn.models.filter(auto_thinking=True).update(enabled=True)
+conn.models.filter(auto_thinking=True).update(enabled=True,input_price_per_million_rial=0,output_price_per_million_rial=0)
 `);
     await page.reload();
     await page.getByRole("button", { name: "انتخاب مدل", exact: true }).click();
@@ -730,6 +746,45 @@ conn.models.filter(auto_thinking=True).update(enabled=True)
     release(title + "/catalog");
     await cards.filter({ hasText: "LAST[" + title + "/catalog]" }).waitFor();
     await stop.waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "گزارش مصرف" }).click();
+    await page.getByRole("heading", { name: "مصرف و تراکنش‌های من" }).waitFor();
+    await page
+      .locator(".billing-table")
+      .getByText(user + " fast", { exact: true })
+      .waitFor();
+    assert.ok(
+      !(await page.locator(".billing-report").innerText()).includes(
+        "توکن ورودی",
+      ),
+    );
+    await page.getByRole("button", { name: "دفتر تراکنش‌ها" }).click();
+    await page.locator(".billing-table").waitFor();
+    await page.getByRole("button", { name: "روند مصرف" }).click();
+    await page.locator(".billing-chart progress").first().waitFor();
+    // Change only this disposable test account to exercise the real admin report.
+    django(`from django.contrib.auth.models import User
+User.objects.filter(username=params["user"]).update(is_staff=True,is_superuser=True)`);
+    await page.goto(base + "/?billing=users");
+    const buyer = page
+      .locator(".billing-table")
+      .getByRole("button", { name: user, exact: true });
+    await buyer.click();
+    await page
+      .locator(".billing-table")
+      .getByText("توکن ورودی", { exact: true })
+      .waitFor();
+    await page
+      .locator(".billing-table")
+      .getByRole("button", { name: user + " fast", exact: true })
+      .click();
+    await until(
+      async () => (await page.locator(".billing-table tbody tr").count()) === 1,
+      "Filtered model report did not resolve",
+    );
+    await page
+      .locator(".billing-table tbody tr")
+      .getByRole("button", { name: user + " fast", exact: true })
+      .waitFor();
     assert.deepEqual(errors, []);
     console.log(
       "PASS: separate reasoning deltas, independent effort settings, reload, mobile and themes; streamed three independent chats through Nginx. Stop closed only B upstream. Three comparison models ran concurrently; synchronized catalog efforts reached the provider through the live selector. Edited and restored a three-model branch without extra provider calls; verified streamed math, literal code and RTL mobile layout in both themes.",

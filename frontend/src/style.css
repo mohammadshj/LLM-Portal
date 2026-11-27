@@ -1527,3 +1527,72 @@ dialog::backdrop {
   align-items: center;
   gap: 6px;
 }
+
+.billing-report {
+  min-width: 0;
+  max-width: 100%;
+}
+.billing-metrics,
+.billing-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr));
+  gap: 0.65rem;
+  margin-block: 1rem;
+}
+.billing-metrics > div {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.billing-tabs,
+.billing-chart > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-block: 0.75rem;
+}
+.billing-tabs [aria-pressed="true"] {
+  color: var(--accent);
+  border-color: currentColor;
+}
+.billing-filters label {
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+}
+.billing-report select,
+.billing-report input {
+  color: inherit;
+  background: var(--surface);
+  min-width: 0;
+  padding: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.billing-table {
+  max-width: 100%;
+  overflow: auto;
+}
+.billing-table table {
+  white-space: nowrap;
+}
+.billing-chart {
+  padding: 0.75rem;
+  border-inline-start: 2px solid var(--line);
+}
+.billing-chart progress {
+  flex: 1;
+  min-width: 3rem;
+  max-width: 24rem;
+}
+.cost-estimate {
+  text-align: center;
+  color: var(--muted);
+}
+.response-cost {
+  color: var(--muted);
+}

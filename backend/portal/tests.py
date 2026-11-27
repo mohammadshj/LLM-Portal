@@ -1,3 +1,4 @@
+from .billing import change_credit
 import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -55,11 +56,22 @@ class PortalTests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(self.user)
         self.account = Account.objects.get(user=self.user)
+        change_credit(self.user.pk, "grant", 100000, "setup", "test")
         self.a = LanguageModel.objects.create(
-            name="A", model_id="a", provider="demo", max_output_tokens=2048
+            input_price_per_million_rial=1000000,
+            output_price_per_million_rial=1000000,
+            name="A",
+            model_id="a",
+            provider="demo",
+            max_output_tokens=2048,
         )
         self.b = LanguageModel.objects.create(
-            name="B", model_id="b", provider="demo", max_output_tokens=2048
+            input_price_per_million_rial=1000000,
+            output_price_per_million_rial=1000000,
+            name="B",
+            model_id="b",
+            provider="demo",
+            max_output_tokens=2048,
         )
         self.conversation = Conversation.objects.create(user=self.user, title="test")
         self.url = f"/api/conversations/{self.conversation.pk}/"
@@ -144,8 +156,7 @@ class PortalTests(TestCase):
             )
 
     def test_insufficient_quota_never_calls_provider(self):
-        self.account.token_limit = 1
-        self.account.save()
+        change_credit(self.user.pk, "set", 1, "insufficient", "test")
         with mock_completion() as provider:
             self.assertEqual(self.send().status_code, 400)
             provider.assert_not_called()
@@ -239,10 +250,14 @@ class ConcurrentQuotaTests(TransactionTestCase):
     def test_parallel_requests_cannot_spend_same_quota(self):
         user = get_user_model().objects.create_user("parallel")
         account = user.account
-        account.token_limit = 2120
-        account.save(update_fields=["token_limit"])
+        change_credit(user.pk, "grant", 2120, "setup", "test")
         model = LanguageModel.objects.create(
-            name="mock", model_id="mock", provider="demo", max_output_tokens=2048
+            input_price_per_million_rial=1000000,
+            output_price_per_million_rial=1000000,
+            name="mock",
+            model_id="mock",
+            provider="demo",
+            max_output_tokens=2048,
         )
         conversation = Conversation.objects.create(user=user, title="parallel")
         start = Barrier(2)

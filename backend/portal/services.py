@@ -9,7 +9,7 @@ from datetime import timedelta
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as ConfigurationError
 from django.db import transaction
-from django.db.models import Sum
+from . import billing
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
@@ -34,9 +34,7 @@ class Job:
     messages: list
 
 
-def _locked_account(user_id):
-    account, _ = Account.objects.get_or_create(user_id=user_id)
-    return Account.objects.select_for_update().get(pk=account.pk)
+_locked_account = billing.locked_account
 
 
 def _turn_status(turn):
@@ -73,14 +71,14 @@ def _expire_locked(user_id, now):
         .select_for_update(of=("self",))
     )
     for turn in stale:
-        turn.replies.filter(status="running").update(
-            status="cancelled" if turn.cancel_requested else "failed",
-            error=EXPIRED,
-            reserved_tokens=0,
-            usage_source="unknown",
-            input_tokens=None,
-            output_tokens=None,
-        )
+        for reply_id in turn.replies.filter(status="running").values_list(
+            "pk", flat=True
+        ):
+            finish_reply(
+                reply_id,
+                "cancelled" if turn.cancel_requested else "failed",
+                error=EXPIRED,
+            )
         _close_turn_if_done(turn)
         log.warning("llm_reservation_expired turn_id=%s", turn.pk)
     return len(stale)
@@ -198,8 +196,12 @@ def _admission_plan(chat, models, content, thinking, reasoning, history_ids):
         messages = []
         bound = model.framing_tokens
         available = model.context_window - model.max_output_tokens
-        prior = chat.messages.filter(
-            role="assistant", status="completed", model=model, parent_id__in=history_ids
+        prior = Message.objects.filter(
+            conversation=chat,
+            role="assistant",
+            status="completed",
+            model=model,
+            parent_id__in=history_ids,
         ).order_by("id")
         fields = ["parent__content", "content"]
         if origin:
@@ -247,32 +249,39 @@ def reserve_turn(
     reasoning=None,
     edit_of=None,
     expected_leaf=UNSPECIFIED,
+    *,
+    estimate=False,
 ):
     with transaction.atomic():
-        account = _locked_account(user.pk)
+        account = (
+            Account.objects.get(user=user) if estimate else _locked_account(user.pk)
+        )
         if not get_user_model().objects.filter(pk=user.pk, is_active=True).exists():
             raise PermissionDenied("این حساب غیرفعال است.")
-        _expire_locked(user.pk, timezone.now())
-        chat = (
-            Conversation.objects.select_for_update()
-            .filter(
-                user=user,
-                pk=conversation.pk,
-                created_at__gte=timezone.now() - timedelta(days=30),
-            )
-            .first()
+        if not estimate and _expire_locked(user.pk, timezone.now()):
+            account.refresh_from_db()
+        chats = (
+            Conversation.objects.all()
+            if estimate
+            else Conversation.objects.select_for_update()
         )
-        if chat is None:
+        chat = chats.filter(
+            user=user,
+            pk=conversation.pk if conversation else None,
+            created_at__gte=timezone.now() - timedelta(days=30),
+        ).first()
+        if chat is None and not (estimate and conversation is None and edit_of is None):
             raise ValidationError("این گفتگو دیگر وجود ندارد.")
-        if request_id and chat.messages.filter(request_id=request_id).exists():
+        if chat and request_id and chat.messages.filter(request_id=request_id).exists():
             raise RequestConflict(
                 "این درخواست قبلاً ثبت شده است. تاریخچه را بررسی کنید."
             )
-        if chat.messages.filter(role="user", status="running").exists():
+        if chat and chat.messages.filter(role="user", status="running").exists():
             raise RequestConflict("در این گفتگو درخواستی در حال پردازش است.")
-        branch = BranchState(chat)
-        branch.check_leaf(expected_leaf)
-        history_ids = branch.path
+        branch = BranchState(chat) if chat else None
+        if branch:
+            branch.check_leaf(expected_leaf)
+        history_ids = branch.path if branch else []
         if edit_of is not None:
             history_ids = branch.prefix(edit_of)
             replies = list(
@@ -320,17 +329,36 @@ def reserve_turn(
         if len(models) != len(model_ids):
             raise ValidationError("یکی از مدل‌ها موجود یا فعال نیست.")
         plans = _admission_plan(chat, models, content, thinking, reasoning, history_ids)
-        open_holds = (
-            Message.objects.filter(
-                conversation__user=user, role="assistant", status="running"
-            ).aggregate(total=Sum("reserved_tokens"))["total"]
-            or 0
-        )
-        if (
-            account.tokens_used + open_holds + sum(p[3] for p in plans)
-            > account.token_limit
-        ):
-            raise ValidationError("سهمیهٔ باقی‌مانده برای این درخواست کافی نیست.")
+        try:
+            holds = {
+                model.pk: billing.calculate_cost(
+                    bound,
+                    model.max_output_tokens,
+                    model.input_price_per_million_rial,
+                    model.output_price_per_million_rial,
+                )
+                for model, _, bound, *_ in plans
+            }
+        except ConfigurationError as exc:
+            raise ValidationError(exc.messages) from None
+        required = sum(holds.values())
+        available = billing.balance(account)["credit_available_rial"]
+        if estimate:
+            return {
+                "required_rial": required,
+                "available_rial": available,
+                "models": holds,
+            }
+        if required > available:
+            raise ValidationError(
+                {
+                    "detail": "اعتبار باقی‌مانده شما برای ارسال این درخواست کافی نیست.",
+                    "required_rial": required,
+                    "available_rial": available,
+                }
+            )
+        account.credit_reserved_rial += required
+        billing.save_balance(account)
         if edit_of is not None:
             chat.messages.filter(pk=edit_of).update(selected_version=False)
         turn = Message.objects.create(
@@ -353,6 +381,10 @@ def reserve_turn(
                 status="running",
                 input_bound=bound,
                 reserved_tokens=hold,
+                reserved_credit_rial=holds[model.pk],
+                billing_status="reserved",
+                input_price_snapshot_rial=model.input_price_per_million_rial,
+                output_price_snapshot_rial=model.output_price_per_million_rial,
                 thinking_level=level,
                 reasoning_settings=settings,
                 reasoning_origin=origin,
@@ -456,18 +488,9 @@ def finish_reply(
         if accounted:
             account.tokens_used += min(accounted, reply.reserved_tokens)
             account.save(update_fields=["tokens_used"])
-            ledger, _ = ModelUsage.objects.get_or_create(
-                user_id=user_id, model_id=reply.model_id
-            )
-            ledger.input_tokens += counts.incoming or 0
-            ledger.output_tokens += counts.outgoing or 0
-            ledger.unsplit_tokens += (
-                accounted - (counts.incoming or 0) - (counts.outgoing or 0)
-            )
-            ledger.save(
-                update_fields=["input_tokens", "output_tokens", "unsplit_tokens"]
-            )
-        reply.response_duration_ms = reply.elapsed_ms(finished_at)
+        reply.response_duration_ms = (
+            None if error == EXPIRED else reply.elapsed_ms(finished_at)
+        )
         reply.status = status
         reply.content = text
         reply.input_tokens = counts.incoming
@@ -477,6 +500,20 @@ def finish_reply(
         reply.reasoning_content = reasoning
         reply.usage_source = source
         reply.error = error[:240]
+        entry = billing.settle(account, turn, reply, counts, source, accounted)
+        if entry or accounted:
+            ledger, _ = ModelUsage.objects.get_or_create(
+                user_id=user_id, model_id=reply.model_id
+            )
+            ledger.input_tokens += counts.incoming or 0
+            ledger.output_tokens += counts.outgoing or 0
+            ledger.unsplit_tokens += (
+                accounted - (counts.incoming or 0) - (counts.outgoing or 0)
+            )
+            if entry:
+                ledger.billed_rial -= entry.amount_rial
+                ledger.billed_requests += 1
+            ledger.save()
         reply.reserved_tokens = 0
         reply.save(
             update_fields=[
@@ -490,6 +527,10 @@ def finish_reply(
                 "reasoning_content",
                 "error",
                 "reserved_tokens",
+                "cost_rial",
+                "reserved_credit_rial",
+                "billing_status",
+                "billing_source",
                 "response_duration_ms",
             ]
         )

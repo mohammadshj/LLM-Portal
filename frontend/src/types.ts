@@ -1,8 +1,14 @@
-export type User = {
+export type Credit = {
+  credit_limit_rial: number;
+  credit_used_rial: number;
+  credit_remaining_rial: number;
+  credit_reserved_rial: number;
+  credit_available_rial: number;
+  credit_version: number;
+};
+export type User = Credit & {
   username: string;
   is_staff: boolean;
-  token_limit: number;
-  tokens_used: number;
 };
 export type ReasoningSettings = {
   toggle?: boolean;
@@ -39,6 +45,8 @@ export type ReasoningProfile = {
   exclusive: (keyof ReasoningSettings)[];
 };
 export type Model = {
+  input_price_per_million_rial: number | null;
+  output_price_per_million_rial: number | null;
   reasoning_profile: ReasoningProfile;
   id: number;
   name: string;
@@ -54,6 +62,10 @@ export type Conversation = {
   is_processing?: boolean;
 };
 export type Message = {
+  free_tariff?: boolean;
+  cost_rial?: number | null;
+  billing_source?: string;
+  billing_status?: string;
   id: number;
   role: "user" | "assistant";
   content: string;
@@ -90,17 +102,3 @@ export type Detail = Conversation & {
   errors: { model: string; detail: string }[];
 };
 export type Page = { results: Conversation[]; next: string | null };
-export type Usage = {
-  accounts: {
-    user__username: string;
-    token_limit: number;
-    tokens_used: number;
-  }[];
-  models: {
-    model_id: number;
-    model__name: string;
-    input_tokens: number;
-    output_tokens: number;
-    unsplit_tokens: number;
-  }[];
-};

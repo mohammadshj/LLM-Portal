@@ -230,11 +230,23 @@ class DiscoveryTests(TestCase):
             (result["added"], result["duplicates"], result["errors"]), (1, 1, 2)
         )
         model = self.conn.models.get()
+        self.assertIsNone(model.input_price_per_million_rial)
+        model.input_price_per_million_rial, model.output_price_per_million_rial = 12, 34
+        model.save(
+            update_fields=[
+                "input_price_per_million_rial",
+                "output_price_per_million_rial",
+            ]
+        )
         self.assertNotIn("private", repr(model.discovery_data))
         self.assertEqual(self.sync([row])["unchanged"], 1)
         self.assertEqual(self.sync([{**row, "name": "New display"}])["updated"], 1)
         model.refresh_from_db()
         self.assertEqual(model.name, "New display")
+        self.assertEqual(
+            (model.input_price_per_million_rial, model.output_price_per_million_rial),
+            (12, 34),
+        )
         model.name, model.enabled, model.capability_overrides = (
             "Manual",
             True,
@@ -324,6 +336,7 @@ class DiscoveryTests(TestCase):
         }
         self.sync([row, {"id": "reasoner-unknown"}])
         model = self.conn.models.get(model_id="r")
+        model.input_price_per_million_rial = model.output_price_per_million_rial = 0
         model.enabled = True
         model.save()
         wire = []
@@ -366,6 +379,8 @@ class DiscoveryTests(TestCase):
 
     def test_manual_budget_and_existing_aliases_survive_sync(self):
         model = LanguageModel.objects.create(
+            input_price_per_million_rial=0,
+            output_price_per_million_rial=0,
             name="legacy",
             provider="openai",
             connection=self.conn,
@@ -513,6 +528,7 @@ class DiscoveryTests(TestCase):
         model = self.conn.models.get()
         self.assertEqual(model.name, "Vectors")
         self.assertFalse(runtime_model(model).can_chat)
+        model.input_price_per_million_rial = model.output_price_per_million_rial = 0
         model.enabled = True
         model.save()
         with upstream(lambda _: self.fail("attempted text generation")):

@@ -291,30 +291,6 @@ def _demo(model, messages):
     return text, sum(len(m["content"].encode()) for m in messages), len(text.encode())
 
 
-def complete(model, messages):
-    """Legacy synchronous JSON path; unknown provider token counts return None."""
-    if model.provider == "demo":
-        return _demo(model, messages)
-    with _diagnostics(model) as details:
-        url, headers, payload = _target(model, messages)
-        with httpx.Client(timeout=_timeout(), follow_redirects=False) as client:
-            with client.stream("POST", url, headers=headers, json=payload) as response:
-                details["status"] = response.status_code
-                _check_http(response.status_code)
-                _check_encoding(response)
-                body = bytearray()
-                for chunk in response.iter_bytes():
-                    _append_json(body, chunk)
-            events = list(_json_events(json.loads(body), details, expose=False))
-            text = next(event.text for event in events if event.kind == "delta")
-            counts = details["usage"]
-            return (
-                text,
-                counts.incoming if counts else None,
-                counts.outgoing if counts else None,
-            )
-
-
 def _too_large():
     return ProviderError("حجم پاسخ سرویس از حد مجاز گذشت.", code="response_limit")
 

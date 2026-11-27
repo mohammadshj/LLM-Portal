@@ -45,14 +45,11 @@ class UserAdminTests(TestCase):
         return self.client.post(reverse("admin:auth_user_change", args=[user.pk]), data)
 
     def test_new_admin_can_sign_in_and_manage_both_roles(self):
-        self.assertEqual(
-            self.add("second", "admin", token_limit="2500").status_code, 302
-        )
+        self.assertEqual(self.add("second", "admin").status_code, 302)
         user = User.objects.get(username="second")
         self.assertTrue(
             user.is_staff and user.is_superuser and user.check_password(self.password)
         )
-        self.assertEqual(user.account.token_limit, 2500)
         self.client.logout()
         response = self.client.post(
             reverse("admin:login"),
@@ -76,16 +73,16 @@ class UserAdminTests(TestCase):
         third.refresh_from_db()
         self.assertTrue(third.is_staff and third.is_superuser)
 
-    def test_default_and_zero_quota_and_single_profile(self):
+    def test_user_creation_ignores_legacy_quota_and_zero_credit_blocks_paid_model(self):
         default = Account._meta.get_field("token_limit").get_default()
         page = self.client.get(reverse("admin:auth_user_add"))
         self.assertContains(page, 'name="role"')
-        self.assertContains(page, 'name="token_limit"')
-        self.assertEqual(page.context["adminform"].form["token_limit"].value(), default)
+        self.assertNotContains(page, 'name="token_limit"')
         self.assertEqual(self.add("default").status_code, 302)
         self.assertEqual(
             self.add(
                 "zero",
+                initial_credit="0",
                 token_limit="0",
                 is_staff="on",
                 is_superuser="on",
@@ -93,11 +90,11 @@ class UserAdminTests(TestCase):
             ).status_code,
             302,
         )
-        for name, expected in [("default", default), ("zero", 0)]:
+        for name in ["default", "zero"]:
             user = User.objects.get(username=name)
             self.assertFalse(user.is_staff or user.is_superuser)
             self.assertEqual(
-                (user.account.token_limit, user.account.tokens_used), (expected, 0)
+                (user.account.token_limit, user.account.tokens_used), (default, 0)
             )
             self.assertEqual(self.edit(user, first_name="changed").status_code, 302)
             self.assertEqual(Account.objects.filter(user=user).count(), 1)
@@ -123,10 +120,10 @@ class UserAdminTests(TestCase):
         )
         self.assertFalse(chat.messages.exists())
 
-    def test_invalid_quota_role_or_password_never_creates_user(self):
-        for bad in ["-1", "1.3", "abc", str(2**63)]:
-            response = self.add("invalid", token_limit=bad)
-            self.assertIn("token_limit", response.context["adminform"].form.errors)
+    def test_invalid_credit_role_or_password_never_creates_user(self):
+        for bad in ["-1", "1.33", "abc", str(2**63)]:
+            response = self.add("invalid", initial_credit=bad)
+            self.assertIn("initial_credit", response.context["adminform"].form.errors)
         self.assertIn(
             "role", self.add("invalid", role="staff").context["adminform"].form.errors
         )
@@ -136,11 +133,11 @@ class UserAdminTests(TestCase):
         )
         self.assertFalse(User.objects.filter(username="invalid").exists())
 
-    def test_quota_edit_keeps_usage_and_uses_standard_password_change(self):
+    def test_user_edits_preserve_historical_quota_usage_and_password_flow(self):
         user = User.objects.create_user("existing", password=self.password)
         Account.objects.filter(user=user).update(token_limit=200, tokens_used=135)
         page = self.client.get(reverse("admin:auth_user_change", args=[user.pk]))
-        self.assertEqual(page.context["adminform"].form["token_limit"].value(), 200)
+        self.assertNotContains(page, 'name="token_limit"')
         self.assertContains(page, "135")
         self.assertEqual(
             self.edit(
@@ -151,7 +148,7 @@ class UserAdminTests(TestCase):
         user.refresh_from_db()
         self.assertEqual(
             (user.first_name, user.account.token_limit, user.account.tokens_used),
-            ("Ali", 600, 135),
+            ("Ali", 200, 135),
         )
         response = self.client.post(
             reverse("admin:auth_user_password_change", args=[user.pk]),
@@ -165,16 +162,17 @@ class UserAdminTests(TestCase):
         user.refresh_from_db()
         self.assertTrue(user.check_password("Changed-password-348!"))
         account_url = reverse("admin:portal_account_change", args=[user.account.pk])
+        self.assertNotContains(self.client.get(account_url), 'name="token_limit"')
         self.assertEqual(
             self.client.post(
                 account_url,
                 {"token_limit": "450", "tokens_used": 0, "user": self.root.pk},
             ).status_code,
-            302,
+            403,
         )
         user.account.refresh_from_db()
         self.assertEqual(
-            (user.account.token_limit, user.account.tokens_used), (450, 135)
+            (user.account.token_limit, user.account.tokens_used), (200, 135)
         )
 
     def test_user_and_legacy_staff_cannot_manage_roles_quota_or_other_users(self):

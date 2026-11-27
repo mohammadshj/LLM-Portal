@@ -2,7 +2,6 @@
 
 import json
 import os
-from contextlib import contextmanager
 from unittest.mock import patch
 
 import httpx
@@ -14,29 +13,8 @@ from django.db.models import ProtectedError
 from django.test import TestCase, TransactionTestCase
 from rest_framework.test import APIClient
 
-from .models import Account, Conversation, LanguageModel, ModelConnection, ModelUsage
-from .providers import ProviderError, complete
-
-
-@contextmanager
-def upstream(handler):
-    async_class = httpx.AsyncClient
-    client_class = httpx.Client
-    with (
-        patch(
-            "portal.providers.httpx.Client",
-            side_effect=lambda **kwargs: client_class(
-                transport=httpx.MockTransport(handler), **kwargs
-            ),
-        ),
-        patch(
-            "portal.providers.httpx.AsyncClient",
-            side_effect=lambda **kw: async_class(
-                transport=httpx.MockTransport(handler), **kw
-            ),
-        ),
-    ):
-        yield
+from .models import Conversation, LanguageModel, ModelConnection, ModelUsage
+from .test_providers import mock_http as upstream
 
 
 def success(content="answer"):
@@ -77,7 +55,19 @@ class ConnectionTests(TestCase):
             model_id="shared-id",
             connection=self.b,
         )
-        self.messages = [{"role": "user", "content": "hello"}]
+        self.user = get_user_model().objects.create_user("routing")
+        self.chat = Conversation.objects.create(user=self.user, title="routing")
+        self.api = APIClient()
+        self.api.force_authenticate(self.user)
+
+    def send_json(self, *models):
+        result = self.api.post(
+            f"/api/conversations/{self.chat.pk}/",
+            {"content": "hello", "model_ids": [model.pk for model in models]},
+            format="json",
+        )
+        self.assertEqual(result.status_code, 200)
+        return result.json()
 
     def test_admin_can_create_connection_and_attach_model(self):
         admin = get_user_model().objects.create_superuser(
@@ -126,14 +116,17 @@ class ConnectionTests(TestCase):
         seen = []
 
         def handler(request):
+            payload = json.loads(request.content)
+            self.assertNotIn("stream", payload)
+            self.assertNotIn("stream_options", payload)
             seen.append(
                 (
                     str(request.url),
                     request.headers.get("Authorization"),
-                    json.loads(request.content)["model"],
+                    payload["model"],
                 )
             )
-            return success()
+            return success(request.url.host)
 
         with (
             patch.dict(
@@ -145,9 +138,25 @@ class ConnectionTests(TestCase):
             ),
             upstream(handler),
         ):
-            self.assertEqual(complete(self.model_a, self.messages), ("answer", 10, 20))
-            complete(self.model_b, self.messages)
-        self.assertEqual(
+            result = self.send_json(self.model_a, self.model_b)
+        self.assertEqual(result["errors"], [])
+        self.assertCountEqual(
+            [
+                (
+                    row["model_id"],
+                    row["content"],
+                    row["input_tokens"],
+                    row["output_tokens"],
+                )
+                for row in result["messages"]
+                if row["role"] == "assistant"
+            ],
+            [
+                (self.model_a.pk, "first.example", 10, 20),
+                (self.model_b.pk, "second.example", 10, 20),
+            ],
+        )
+        self.assertCountEqual(
             seen,
             [
                 (
@@ -184,9 +193,8 @@ class ConnectionTests(TestCase):
             patch.dict(os.environ, {"LLM_FIRST_API_KEY": "shared-test-key"}),
             upstream(handler),
         ):
-            complete(self.model_a, self.messages)
-            complete(extra, self.messages)
-        self.assertEqual(
+            self.assertEqual(self.send_json(self.model_a, extra)["errors"], [])
+        self.assertCountEqual(
             seen,
             [
                 ("Bearer shared-test-key", "shared-id"),
@@ -199,25 +207,36 @@ class ConnectionTests(TestCase):
             patch.dict(
                 os.environ, {"LLM_API_KEY": "legacy-test-key", "LLM_FIRST_API_KEY": ""}
             ),
-            patch("portal.providers.httpx.Client") as client,
+            patch("portal.providers.httpx.AsyncClient") as client,
         ):
-            with self.assertRaises(ProviderError):
-                complete(self.model_a, self.messages)
+            result = self.send_json(self.model_a)
+            self.assertEqual(len(result["errors"]), 1)
+            self.assertEqual(result["messages"][-1]["status"], "failed")
             client.assert_not_called()
 
+    def assert_connection_rejected(self, detail):
+        with patch("portal.providers.httpx.AsyncClient") as client:
+            result = self.send_json(self.model_a)
+        client.assert_not_called()
+        self.assertEqual(
+            result["errors"], [{"model": self.model_a.name, "detail": detail}]
+        )
+        self.assertEqual(result["messages"][-1]["status"], "failed")
+
     def test_disabled_or_missing_connection_never_calls_http(self):
-        with patch("portal.providers.httpx.Client") as client:
-            self.a.enabled = False
-            with self.assertRaises(ProviderError):
-                complete(self.model_a, self.messages)
-            self.model_a.connection = None
-            with self.assertRaises(ProviderError):
-                complete(self.model_a, self.messages)
-            client.assert_not_called()
+        detail = "اتصال سرویس مدل تنظیم نشده یا غیرفعال است."
+        self.a.enabled = False
+        self.a.save(update_fields=["enabled"])
+        self.assert_connection_rejected(detail)
+        self.model_a.connection = None
+        self.model_a.save(update_fields=["connection"])
+        self.assert_connection_rejected(detail)
 
     def test_keyless_local_connection_sends_no_authorization(self):
         self.a.base_url = "http://localhost:11434/v1"
         self.a.api_key_env = ""
+        self.a.streaming_enabled = False
+        self.a.save()
 
         def handler(request):
             self.assertNotIn("Authorization", request.headers)
@@ -225,9 +244,10 @@ class ConnectionTests(TestCase):
             return success()
 
         with upstream(handler):
-            complete(self.model_a, self.messages)
+            self.assertEqual(self.send_json(self.model_a)["errors"], [])
 
     def test_invalid_urls_and_secret_references_rejected_before_network(self):
+        detail = "تنظیمات اتصال سرویس مدل معتبر نیست."
         for value in [
             "ftp://first.example/v1",
             "https://user:password@first.example/v1",
@@ -236,14 +256,10 @@ class ConnectionTests(TestCase):
             "https://first.example/v1?",
             "https://first.example/v1#",
         ]:
-            self.a.base_url = value
-            with (
-                self.subTest(url=value),
-                patch("portal.providers.httpx.Client") as client,
-            ):
-                with self.assertRaises(ProviderError):
-                    complete(self.model_a, self.messages)
-                client.assert_not_called()
+            with self.subTest(url=value):
+                self.a.base_url = value
+                self.a.save()
+                self.assert_connection_rejected(detail)
         self.a.base_url = "https://first.example/v1"
         for value in [
             "POSTGRES_PASSWORD",
@@ -251,14 +267,10 @@ class ConnectionTests(TestCase):
             "actual-secret-key-value",
             "LLM_API_KEY\n",
         ]:
-            self.a.api_key_env = value
-            with (
-                self.subTest(reference=value),
-                patch("portal.providers.httpx.Client") as client,
-            ):
-                with self.assertRaises(ProviderError):
-                    complete(self.model_a, self.messages)
-                client.assert_not_called()
+            with self.subTest(reference=value):
+                self.a.api_key_env = value
+                self.a.save()
+                self.assert_connection_rejected(detail)
 
     def test_admin_model_validation_and_connection_protection(self):
         self.model_a.connection = None
@@ -285,17 +297,14 @@ class ConnectionTests(TestCase):
             patch.dict(os.environ, {"LLM_FIRST_API_KEY": "first-test-key"}),
             upstream(handler),
         ):
-            with self.assertRaises(ProviderError):
-                complete(self.model_a, self.messages)
+            result = self.send_json(self.model_a)
+            self.assertIn("HTTP 307", result["errors"][0]["detail"])
+            self.assertEqual(result["messages"][-1]["status"], "failed")
         self.assertEqual(seen, ["https://first.example/v1/chat/completions"])
 
     def test_api_comparison_routing_partial_failure_and_no_connection_leak(self):
-        user = get_user_model().objects.create_user("connections")
-        account = Account.objects.get(user=user)
-        chat = Conversation.objects.create(user=user, title="comparison")
-        client = APIClient()
-        client.force_authenticate(user)
-        models = client.get("/api/models/").data
+        account = self.user.account
+        models = self.api.get("/api/models/").data
         self.assertEqual(
             set(models[0]),
             {
@@ -330,15 +339,10 @@ class ConnectionTests(TestCase):
             ),
             upstream(handler),
         ):
-            result = client.post(
-                f"/api/conversations/{chat.pk}/",
-                {"content": "hello", "model_ids": [self.model_a.pk, self.model_b.pk]},
-                format="json",
-            )
-        self.assertEqual(result.status_code, 200)
-        self.assertEqual(len(result.data["errors"]), 1)
-        self.assertEqual(result.data["errors"][0]["model"], "B")
-        payload = json.dumps(result.data)
+            result = self.send_json(self.model_a, self.model_b)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(result["errors"][0]["model"], "B")
+        payload = json.dumps(result)
         for private in [
             "first.example",
             "second.example",
@@ -350,10 +354,10 @@ class ConnectionTests(TestCase):
         account.refresh_from_db()
         self.assertEqual(account.tokens_used, 30)
         self.assertEqual(
-            ModelUsage.objects.get(user=user, model=self.model_a).input_tokens, 10
+            ModelUsage.objects.get(user=self.user, model=self.model_a).input_tokens, 10
         )
         self.assertEqual(
-            ModelUsage.objects.get(user=user, model=self.model_b).billed_rial, 0
+            ModelUsage.objects.get(user=self.user, model=self.model_b).billed_rial, 0
         )
 
 

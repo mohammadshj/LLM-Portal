@@ -1,3 +1,4 @@
+import { composeMessages, type LiveTurn } from "./composeMessages";
 import type { Credit } from "./types";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
@@ -17,13 +18,6 @@ export type Revision = {
   content: string;
   replies: Message[];
   changeModels: boolean;
-};
-type LiveTurn = {
-  editOf?: number;
-  confirmed?: boolean;
-  id: string;
-  messages: Message[];
-  stopping: boolean;
 };
 type Chat = {
   prompt: string;
@@ -465,45 +459,12 @@ export function useChats(
   const busy = (id: number, listed = false) =>
     sends.current.has(id) ||
     (chats[id]?.detail ? !!chats[id]?.detail?.active_request_id : listed);
-  // A reload can observe a turn still being settled. Poll that turn until the
-  // server has persisted final messages, retaining any local partials meanwhile.
-  const live =
-    chat.live?.editOf && !chat.live.confirmed ? undefined : chat.live;
-  const stored = chat.detail?.messages ?? [];
-  const turn =
-    live && stored.find((m) => m.role === "user" && m.request_id === live.id);
-  const cut = live?.editOf ? stored.findIndex((m) => m.id === live.editOf) : -1;
-  const prefix = cut < 0 ? stored : stored.slice(0, cut);
-  const messages = prefix.filter(
-    (m) =>
-      !live || (m.request_id !== live.id && (!turn || m.parent_id !== turn.id)),
-  );
-  if (live) {
-    for (const m of live.messages) {
-      // A reconnect may find one model settled while its siblings are still running.
-      const row =
-        turn && m.role === "assistant"
-          ? stored.find(
-              (row) => row.parent_id === turn.id && row.model_id === m.model_id,
-            )
-          : undefined;
-      if (row && row.status !== "running") {
-        messages.push({
-          ...row,
-          reasoning_content: row.reasoning_content ?? m.reasoning_content,
-        });
-      } else if (m.status === "running" && !sends.current.has(activeId)) {
-        // Only advance a disconnected stream's clock while polling confirms it is active.
-        messages.push({
-          ...m,
-          elapsed_ms: chat.readError ? null : row?.elapsed_ms,
-          elapsedSampleAt: row?.elapsedSampleAt,
-        });
-      } else {
-        messages.push(m);
-      }
-    }
-  }
+  const messages = composeMessages({
+    stored: chat.detail?.messages ?? [],
+    live: chat.live,
+    streaming: sends.current.has(activeId),
+    readError: chat.readError,
+  });
   return {
     activeId,
     chat,

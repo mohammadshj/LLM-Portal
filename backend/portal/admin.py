@@ -26,11 +26,6 @@ class PortalUserFields(forms.Form):
         choices=[("user", "User — کاربر"), ("admin", "Admin — مدیر")],
         initial="user",
     )
-    token_limit = Account._meta.get_field("token_limit").formfield(
-        label="سقف توکن",
-        required=False,
-        help_text="خالی هنگام ایجاد یعنی سهمیهٔ پیش‌فرض. هنگام ویرایش، خالی گذاشتن سقف فعلی را حفظ می‌کند.",
-    )
 
 
 class AddUserForm(PortalUserFields, AdminUserCreationForm):
@@ -48,7 +43,6 @@ class EditUserForm(PortalUserFields, UserChangeForm):
         self.initial["role"] = (
             "admin" if self.instance.is_staff and self.instance.is_superuser else "user"
         )
-        self.initial["token_limit"] = self.instance.account.token_limit
 
 
 class BalanceFilter(admin.SimpleListFilter):
@@ -85,14 +79,13 @@ class PortalUserAdmin(UserAdmin):
     add_fieldsets = (
         *UserAdmin.add_fieldsets,
         (
-            "دسترسی و سهمیه",
+            "دسترسی و اعتبار",
             {
                 "fields": (
                     "role",
                     "is_active",
                     "initial_credit",
                     "credit_reason",
-                    "token_limit",
                 )
             },
         ),
@@ -101,12 +94,11 @@ class PortalUserAdmin(UserAdmin):
         UserAdmin.fieldsets[0],
         UserAdmin.fieldsets[1],
         (
-            "دسترسی و سهمیه",
+            "دسترسی و اعتبار",
             {
                 "fields": (
                     "role",
                     "is_active",
-                    "token_limit",
                     "consumed_tokens",
                     "credit_details",
                     "credit_history",
@@ -218,9 +210,6 @@ class PortalUserAdmin(UserAdmin):
                 request.user,
             )
         super().save_model(request, obj, form, change)
-        limit = form.cleaned_data["token_limit"]
-        if limit is not None and (not change or "token_limit" in form.changed_data):
-            Account.objects.filter(user_id=obj.pk).update(token_limit=limit)
         if change and not obj.is_active and "is_active" in form.changed_data:
             Message.objects.filter(
                 conversation__user=obj, role="user", status="running"
@@ -229,8 +218,8 @@ class PortalUserAdmin(UserAdmin):
 
 @admin.register(Account)
 class AccountAdmin(admin.ModelAdmin):
-    fields = ["user", "tokens_used", "token_limit"]
-    list_display = ["user", "token_limit", "tokens_used"]
+    fields = ["user", "tokens_used"]
+    list_display = ["user", "tokens_used"]
     search_fields = ["user__username"]
     readonly_fields = ["user", "tokens_used"]
 
@@ -240,8 +229,8 @@ class AccountAdmin(admin.ModelAdmin):
     def has_delete_permission(self, request, obj=None):
         return False
 
-    def save_model(self, request, obj, form, change):
-        obj.save(update_fields=["token_limit"])
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 class CatalogAdmin(admin.ModelAdmin):

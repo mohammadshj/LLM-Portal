@@ -24,7 +24,7 @@ from .models import (
     ModelConnection,
     ModelUsage,
 )
-from .providers import ProviderError, ProviderEvent, complete
+from .providers import ProviderError, ProviderEvent
 from .streaming import send_message
 
 
@@ -162,6 +162,16 @@ class PortalTests(TestCase):
             provider.assert_not_called()
         self.assertFalse(Message.objects.exists())
 
+    def test_paid_turn_with_credit_can_exceed_historical_token_limit(self):
+        Account.objects.filter(pk=self.account.pk).update(token_limit=0)
+        result = self.send()
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.data["errors"], [])
+        profile = self.client.get("/api/auth/me/").data
+        self.assertEqual(profile["token_limit"], 0)
+        self.assertGreater(profile["tokens_used"], 0)
+        self.assertGreater(profile["credit_used_rial"], 0)
+
     def test_context_rejection_never_calls_provider(self):
         self.a.context_window = 10
         self.a.save()
@@ -240,9 +250,16 @@ class PortalTests(TestCase):
             base_url="https://missing.example/v1",
             api_key_env="LLM_API_KEY",
         )
-        with patch.dict(os.environ, {"LLM_API_KEY": ""}):
-            with self.assertRaises(ProviderError):
-                complete(self.a, [{"role": "user", "content": "test"}])
+        self.a.save(update_fields=["provider", "connection"])
+        with (
+            patch.dict(os.environ, {"LLM_API_KEY": ""}),
+            patch("portal.providers.httpx.AsyncClient") as transport,
+        ):
+            result = self.send()
+            transport.assert_not_called()
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.data["errors"][0]["model"], self.a.name)
+        self.assertEqual(result.data["messages"][-1]["status"], "failed")
 
 
 class ConcurrentQuotaTests(TransactionTestCase):

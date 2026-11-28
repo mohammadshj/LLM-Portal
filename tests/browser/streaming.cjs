@@ -156,6 +156,10 @@ async function run() {
     });
     page.setDefaultTimeout(timeout);
     const errors = [];
+    const estimates = [];
+    page.on("request", (req) => {
+      if (req.url().includes("/estimate/")) estimates.push(req.url());
+    });
     page.on("console", (m) => {
       if (
         m.type() === "error" &&
@@ -168,6 +172,25 @@ async function run() {
     });
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(base);
+    await page.getByLabel("نام کاربری", { exact: true }).waitFor();
+    const themeSelect = page.getByRole("combobox", { name: "حالت نمایش" });
+    await themeSelect.selectOption("dark");
+    await page.reload();
+    await page.locator('html[data-theme="dark"]').waitFor();
+    assert.equal(await themeSelect.inputValue(), "dark");
+    await themeSelect.selectOption("system");
+    if (process.env.PORTAL_SCREENSHOTS) {
+      for (const colorScheme of ["dark", "light"]) {
+        await page.emulateMedia({ colorScheme });
+        await page.locator(`html[data-theme="${colorScheme}"]`).waitFor();
+        await page.screenshot({
+          path: path.join(
+            process.env.PORTAL_SCREENSHOTS,
+            "login-" + colorScheme + ".png",
+          ),
+        });
+      }
+    }
     await page.getByLabel("نام کاربری", { exact: true }).fill(user);
     await page.getByLabel("رمز عبور", { exact: true }).fill(password);
     await page.getByRole("button", { name: /ورود به پورتال/ }).click();
@@ -190,22 +213,24 @@ async function run() {
     );
     await page.getByRole("button", { name: "جمع کردن نوار گفتگوها" }).click();
     await page.getByRole("button", { name: "باز کردن نوار گفتگوها" }).click();
-    async function start(title, models, level) {
+    async function start(title, models, level, catalogSize = 3) {
       await page.getByRole("button", { name: /گفتگوی تازه/ }).click();
+      if (models.length > 1)
+        await page
+          .getByRole("button", { name: "مقایسه مدل‌ها", exact: true })
+          .click();
       await page
         .getByRole("button", { name: "انتخاب مدل", exact: true })
         .click();
       await page
         .getByRole("checkbox", { name: user + " fast", exact: true })
         .waitFor();
-      for (const checkbox of await page
-        .getByRole("checkbox", { checked: true })
-        .all()) {
-        await checkbox.uncheck();
+      while (await page.getByRole("checkbox", { checked: true }).count()) {
+        await page.getByRole("checkbox", { checked: true }).first().uncheck();
       }
       const filter = page.getByRole("textbox", { name: "جست‌وجوی مدل" });
       await filter.fill(user);
-      assert.equal(await page.getByRole("checkbox").count(), 3);
+      assert.equal(await page.getByRole("checkbox").count(), catalogSize);
       await filter.fill("");
       for (const model of models) {
         await page
@@ -388,7 +413,7 @@ async function run() {
     );
     for (const colorScheme of ["dark", "light"]) {
       await page.emulateMedia({ colorScheme });
-      for (const width of [320, 390, 640, 768, 1024, 1440]) {
+      for (const width of [320, 360, 390, 640, 768, 1024, 1440, 1920]) {
         await page.setViewportSize({ width, height: 844 });
         await page.locator(`html[data-theme="${colorScheme}"]`).waitFor();
         assert.ok(await first.locator(".reasoning p").isVisible());
@@ -564,6 +589,32 @@ async function run() {
       await page.evaluate(() => navigator.clipboard.readText()),
       "def hello(): return 1",
     );
+    await rich.getByRole("button", { name: "مفید بود", exact: true }).click();
+    await until(
+      async () =>
+        (await rich
+          .getByRole("button", { name: "مفید بود", exact: true })
+          .getAttribute("aria-pressed")) === "true",
+      "feedback was not saved",
+    );
+    await page
+      .getByRole("button", { name: "مدیریت گفتگو " + D, exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "سنجاق گفتگو", exact: true })
+      .click();
+    await page
+      .getByRole("heading", { name: "سنجاق‌شده", exact: true })
+      .waitFor();
+    await page
+      .getByRole("button", { name: "مدیریت گفتگو " + D, exact: true })
+      .click();
+    const downloaded = page.waitForEvent("download");
+    await page
+      .getByRole("button", { name: "دریافت متن گفتگو", exact: true })
+      .click();
+    assert.ok((await downloaded).suggestedFilename().endsWith(".md"));
+    assert.deepEqual(estimates, []);
     await capture("comparison");
     await rich.getByRole("button", { name: "گسترش پاسخ" }).click();
     await page.getByRole("dialog").locator("table").waitFor();
@@ -668,11 +719,13 @@ assert conn.models.filter(auto_thinking=True, enabled=True).count() == 0
 conn.models.filter(auto_thinking=True).update(enabled=True,input_price_per_million_rial=0,output_price_per_million_rial=0)
 `);
     await page.reload();
+    await page
+      .getByRole("button", { name: "مقایسه مدل‌ها", exact: true })
+      .click();
     await page.getByRole("button", { name: "انتخاب مدل", exact: true }).click();
-    for (const checkbox of await page
-      .getByRole("checkbox", { checked: true })
-      .all())
-      await checkbox.uncheck();
+    while (await page.getByRole("checkbox", { checked: true }).count()) {
+      await page.getByRole("checkbox", { checked: true }).first().uncheck();
+    }
     const unknown = page.getByRole("checkbox", {
       name: user + " unknown",
       exact: true,
@@ -733,6 +786,12 @@ conn.models.filter(auto_thinking=True).update(enabled=True,input_price_per_milli
     );
     await effort.selectOption("xhigh");
     await page.getByRole("button", { name: "انجام شد" }).click();
+    await page.getByRole("button", { name: "گفتگو", exact: true }).click();
+    await page.getByRole("button", { name: "انتخاب مدل", exact: true }).click();
+    await page
+      .getByRole("checkbox", { name: user + " catalog", exact: true })
+      .check();
+    await page.getByRole("button", { name: "انجام شد" }).click();
     const title = "مدل کشف‌شده";
     await page.locator("#prompt").fill(title);
     await page.locator("#prompt").press("Enter");
@@ -746,6 +805,21 @@ conn.models.filter(auto_thinking=True).update(enabled=True,input_price_per_milli
     release(title + "/catalog");
     await cards.filter({ hasText: "LAST[" + title + "/catalog]" }).waitFor();
     await stop.waitFor({ state: "hidden" });
+    const runsBefore = records.filter(
+      (r) => r.event === "started" && r.task === title + "/catalog",
+    ).length;
+    await cards.getByRole("button", { name: "عملیات پاسخ" }).click();
+    await page.getByRole("button", { name: "تولید مجدد پاسخ" }).click();
+    await until(
+      () =>
+        records.filter(
+          (r) => r.event === "started" && r.task === title + "/catalog",
+        ).length ===
+        runsBefore + 1,
+      "Regeneration did not start a new version",
+    );
+    await stop.waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "نسخهٔ قدیمی‌تر" }).waitFor();
     await page.getByRole("button", { name: "گزارش مصرف" }).click();
     await page.getByRole("heading", { name: "مصرف و تراکنش‌های من" }).waitFor();
     await page
@@ -757,10 +831,20 @@ conn.models.filter(auto_thinking=True).update(enabled=True,input_price_per_milli
         "توکن ورودی",
       ),
     );
+    await capture("personal-report");
     await page.getByRole("button", { name: "دفتر تراکنش‌ها" }).click();
     await page.locator(".billing-table").waitFor();
     await page.getByRole("button", { name: "روند مصرف" }).click();
     await page.locator(".billing-chart progress").first().waitFor();
+    await page.getByRole("button", { name: "بازگشت به گفتگو" }).click();
+    const separate = "توقف مستقل مدل";
+    await start(separate, ["fast", "slow"], "off", 8);
+    const slower = cards.filter({ hasText: user + " slow" });
+    await slower.getByRole("button", { name: "توقف همین مدل" }).click();
+    await slower.getByText("متوقف شد", { exact: true }).waitFor();
+    release(separate + "/fast");
+    await cards.filter({ hasText: "LAST[" + separate + "/fast]" }).waitFor();
+    await stop.waitFor({ state: "hidden" });
     // Change only this disposable test account to exercise the real admin report.
     django(`from django.contrib.auth.models import User
 User.objects.filter(username=params["user"]).update(is_staff=True,is_superuser=True)`);
@@ -785,6 +869,14 @@ User.objects.filter(username=params["user"]).update(is_staff=True,is_superuser=T
       .locator(".billing-table tbody tr")
       .getByRole("button", { name: user + " fast", exact: true })
       .waitFor();
+    await page.goto(base + "/admin/");
+    await until(
+      async () =>
+        page
+          .locator(".portal-admin-brand img:visible")
+          .evaluate((img) => img.naturalWidth > 0),
+      "Admin brand did not load",
+    );
     assert.deepEqual(errors, []);
     console.log(
       "PASS: separate reasoning deltas, independent effort settings, reload, mobile and themes; streamed three independent chats through Nginx. Stop closed only B upstream. Three comparison models ran concurrently; synchronized catalog efforts reached the provider through the live selector. Edited and restored a three-model branch without extra provider calls; verified streamed math, literal code and RTL mobile layout in both themes.",

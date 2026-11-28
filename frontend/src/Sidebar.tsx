@@ -1,11 +1,16 @@
 import { money } from "./credit";
+import { ThemeSettings } from "./ThemeToggle";
+import { historyGroups } from "./preferences";
 import { useState } from "react";
 import {
   Activity,
   ChevronsRight,
   CircleUserRound,
   Ellipsis,
-  History,
+  Pin,
+  Download,
+  ChevronUp,
+  ChartColumn,
   LogOut,
   MessageSquare,
   Plus,
@@ -14,42 +19,32 @@ import {
 } from "lucide-react";
 import type { Conversation, User } from "./types";
 import type { useHistory } from "./useHistory";
-import { Brand, Dialog, number } from "./ui";
+import { Brand, Dialog } from "./ui";
 
 export function Quota({ user }: { user: User }) {
-  const percent = user.credit_limit_rial
-    ? Math.round((100 * user.credit_used_rial) / user.credit_limit_rial)
-    : 0;
-  const low = user.credit_available_rial <= user.credit_limit_rial / 10;
   return (
-    <section className="quota" aria-label="اعتبار حساب" data-warning={low}>
+    <section
+      className="quota"
+      aria-label="اعتبار حساب"
+      data-warning={user.credit_available_rial <= 0}
+    >
       <div className="line">
         <strong>
           <Wallet /> اعتبار قابل استفاده
         </strong>
         <b>{money(user.credit_available_rial)}</b>
       </div>
-      <progress aria-label="درصد اعتبار مصرف‌شده" value={percent} max={100} />
-      <div>
-        مصرف‌شده {money(user.credit_used_rial)} · {number(percent)}٪
-      </div>
-      <div>اعتبار کل {money(user.credit_limit_rial)}</div>
       {user.credit_reserved_rial > 0 && (
         <small>در حال پردازش {money(user.credit_reserved_rial)}</small>
-      )}
-      {user.credit_remaining_rial === 0 ? (
-        <small>
-          اعتبار شما به پایان رسیده است. برای افزایش اعتبار با مدیر سیستم تماس
-          بگیرید.
-        </small>
-      ) : (
-        low && <small>اعتبار قابل استفاده کم است.</small>
       )}
     </section>
   );
 }
 
 type Props = {
+  themeChoice: "light" | "dark" | "system";
+  selectTheme: (v: "light" | "dark" | "system") => void;
+  onReport: () => void;
   user: User;
   history: ReturnType<typeof useHistory>;
   activeId: number;
@@ -64,6 +59,9 @@ type Props = {
 export function Sidebar({
   user,
   history,
+  themeChoice,
+  selectTheme,
+  onReport,
   activeId,
   busy,
   onNew,
@@ -73,6 +71,7 @@ export function Sidebar({
   loggingOut,
   onCollapse,
 }: Props) {
+  const [accountOpen, setAccountOpen] = useState(false);
   return (
     <aside className="sidebar" aria-label="نوار گفتگوها">
       <div className="brand-row">
@@ -103,9 +102,6 @@ export function Sidebar({
           onChange={(e) => history.setQuery(e.target.value)}
         />
       </label>
-      <div className="section-label">
-        <History /> گفتگوهای اخیر
-      </div>
       <nav className="history" aria-label="تاریخچه گفتگو">
         {history.loading ? (
           <div
@@ -118,36 +114,47 @@ export function Sidebar({
             <i />
           </div>
         ) : (
-          history.items.map((c) => (
-            <div
-              className={"history-row" + (c.id === activeId ? " current" : "")}
-              key={c.id}
-            >
-              <button
-                aria-label={c.title}
-                aria-description={
-                  busy(c.id, c.is_processing) ? "در حال پردازش" : undefined
-                }
-                className="history-link"
-                aria-current={c.id === activeId ? "page" : undefined}
-                onClick={() => onOpen(c.id)}
-              >
-                {busy(c.id, c.is_processing) ? (
-                  <Activity className="pulse" aria-label="در حال پردازش" />
-                ) : (
-                  <MessageSquare />
-                )}
-                <bdi>{c.title}</bdi>
-              </button>
-              <button
-                className="icon"
-                aria-label={"مدیریت گفتگو " + c.title}
-                title="تغییر نام یا حذف"
-                onClick={() => onManage(c)}
-              >
-                <Ellipsis />
-              </button>
-            </div>
+          historyGroups(history.items).map(([group, rows]) => (
+            <section key={group}>
+              <h2 className="section-label">
+                {group === "سنجاق‌شده" && <Pin />}
+                {group}
+              </h2>
+              {rows.map((c) => (
+                <div
+                  className={
+                    "history-row" + (c.id === activeId ? " current" : "")
+                  }
+                  key={c.id}
+                >
+                  <button
+                    title={c.title}
+                    aria-label={c.title}
+                    aria-description={
+                      busy(c.id, c.is_processing) ? "در حال پردازش" : undefined
+                    }
+                    className="history-link"
+                    aria-current={c.id === activeId ? "page" : undefined}
+                    onClick={() => onOpen(c.id)}
+                  >
+                    {busy(c.id, c.is_processing) ? (
+                      <Activity className="pulse" aria-label="در حال پردازش" />
+                    ) : (
+                      <MessageSquare />
+                    )}
+                    <bdi>{c.title}</bdi>
+                  </button>
+                  <button
+                    className="icon"
+                    aria-label={"مدیریت گفتگو " + c.title}
+                    title="عملیات گفتگو"
+                    onClick={() => onManage(c)}
+                  >
+                    <Ellipsis />
+                  </button>
+                </div>
+              ))}
+            </section>
           ))
         )}
         {!history.loading && !history.error && !history.items.length && (
@@ -170,22 +177,40 @@ export function Sidebar({
         )}
       </nav>
       <Quota user={user} />
-      <div className="account">
+      <button
+        className="account"
+        aria-haspopup="dialog"
+        onClick={() => setAccountOpen(true)}
+      >
         <CircleUserRound />
-        <div>
+        <span>
           <strong dir="auto">{user.username}</strong>
           <small>{user.is_staff ? "مدیر سامانه" : "حساب کاربری"}</small>
-        </div>
-        <button
-          onClick={onLogout}
-          disabled={loggingOut}
-          className="icon"
-          title="خروج"
-          aria-label="خروج"
-        >
-          <LogOut />
-        </button>
-      </div>
+        </span>
+        <ChevronUp />
+      </button>
+      {accountOpen && (
+        <Dialog title="حساب و تنظیمات" onClose={() => setAccountOpen(false)}>
+          <div className="dialog-form">
+            <strong dir="auto">{user.username}</strong>
+            <Quota user={user} />
+            <ThemeSettings choice={themeChoice} select={selectTheme} />
+            <button
+              onClick={() => {
+                setAccountOpen(false);
+                onReport();
+              }}
+            >
+              <ChartColumn />
+              گزارش مصرف حساب
+            </button>
+            <button disabled={loggingOut} onClick={onLogout}>
+              <LogOut />
+              خروج از حساب
+            </button>
+          </div>
+        </Dialog>
+      )}
     </aside>
   );
 }
@@ -194,11 +219,15 @@ export function ManageConversation({
   item,
   busy,
   onRename,
+  onPin,
+  onExport,
   onRemove,
   close,
 }: {
   item: Conversation;
   busy: boolean;
+  onPin: () => Promise<void>;
+  onExport: () => Promise<void>;
   onRename: (title: string) => Promise<void>;
   onRemove: () => Promise<void>;
   close: () => void;
@@ -207,6 +236,17 @@ export function ManageConversation({
   const [deleting, setDeleting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  async function action(run: () => Promise<void>) {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await run();
+      close();
+    } catch (e) {
+      setError((e as Error).message);
+      setSaving(false);
+    }
+  }
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (saving) return;
@@ -229,6 +269,26 @@ export function ManageConversation({
       }}
     >
       <form onSubmit={submit} className="dialog-form">
+        {!deleting && (
+          <div className="conversation-actions">
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => action(onPin)}
+            >
+              <Pin />
+              {item.pinned ? "برداشتن سنجاق" : "سنجاق گفتگو"}
+            </button>
+            <button
+              type="button"
+              disabled={saving || busy}
+              onClick={() => action(onExport)}
+            >
+              <Download />
+              دریافت متن گفتگو
+            </button>
+          </div>
+        )}
         {deleting ? (
           <p>
             گفتگوی «{item.title}» و پیام‌های آن حذف شوند؟ امکان بازگرداندن آن‌ها

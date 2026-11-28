@@ -348,6 +348,7 @@ class LanguageModelAdmin(CatalogAdmin):
                     "context_window",
                     "max_output_tokens",
                     "provider_output_limit",
+                    "adaptive_min_output",
                     "output_parameter",
                     "stream_usage_option",
                     "tokenizer_name",

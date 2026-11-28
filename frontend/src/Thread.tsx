@@ -1,80 +1,51 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowDown,
-  ArrowUpLeft,
   Code2,
-  GitCompareArrows,
-  Layers3,
-  ListTree,
+  FileText,
   PenLine,
+  Languages,
+  Sparkles,
 } from "lucide-react";
 
-export function PortalArt() {
-  return (
-    <div className="portal-art" aria-hidden="true">
-      <div className="art-orbit" />
-      <div className="art-sheet sheet-back" />
-      <div className="art-sheet sheet-mid" />
-      <div className="art-sheet sheet-front">
-        <Layers3 />
-      </div>
-      <i className="art-node n1" />
-      <i className="art-node n2" />
-    </div>
-  );
-}
 const starters = [
   {
-    icon: ListTree,
-    title: "تحلیل یک مسئله",
-    hint: "مسیرهای حل را بررسی کنید",
-    prompt:
-      "مسئلهٔ زیر را تحلیل کن و راه‌حل‌ها را همراه با مزایا و محدودیت‌هایشان مقایسه کن:\n",
+    icon: FileText,
+    title: "خلاصه‌سازی متن",
+    prompt: "متن زیر را خلاصه کن و نکته‌های اصلی آن را مشخص کن:\n",
   },
   {
     icon: PenLine,
     title: "بازنویسی متن",
-    hint: "لحن و ساختار را بهبود دهید",
-    prompt: "متن زیر را با لحنی رسمی، روشن و روان بازنویسی کن:\n",
+    prompt: "متن زیر را با لحنی رسمی و روشن بازنویسی کن:\n",
   },
   {
     icon: Code2,
     title: "بررسی کد",
-    hint: "منطق و کیفیت کد را بسنجید",
-    prompt:
-      "کد زیر را بررسی کن و برای بهبود خوانایی و عملکرد آن پیشنهاد بده:\n",
+    prompt: "کد زیر را بررسی کن و برای بهبود خوانایی آن پیشنهاد بده:\n",
   },
+  { icon: Languages, title: "ترجمه متن", prompt: "متن زیر را ترجمه کن:\n" },
 ];
-export function Welcome({ prepare }: { prepare: (v: string) => void }) {
+export function Welcome() {
   return (
-    <div className="welcome">
-      <section className="hero">
-        <div className="hero-copy">
-          <span className="hero-icon">
-            <GitCompareArrows />
-          </span>
-          <h2>گفتگو و مقایسهٔ مدل‌ها</h2>
-          <p>
-            یک پرسش بنویسید و پاسخ یک تا سه مدل زبانی را در کنار هم بررسی کنید.
-          </p>
-        </div>
-        <PortalArt />
-      </section>
-      <section className="starters">
-        <h3>پیشنهادهایی برای شروع</h3>
-        <div>
-          {starters.map(({ icon: Icon, title, hint, prompt }) => (
-            <button key={title} onClick={() => prepare(prompt)}>
-              <span className="starter-icon">
-                <Icon />
-              </span>
-              <strong>{title}</strong>
-              <small>{hint}</small>
-              <ArrowUpLeft className="starter-arrow" />
-            </button>
-          ))}
-        </div>
-      </section>
+    <section className="hero">
+      <span className="welcome-mark">
+        <Sparkles aria-hidden="true" />
+      </span>
+      <h2>چطور می‌توانم کمک کنم؟</h2>
+      <p>با یک مدل گفتگو کنید یا پاسخ چند مدل را کنار هم بسنجید.</p>
+    </section>
+  );
+}
+export function Suggestions({ prepare }: { prepare: (text: string) => void }) {
+  return (
+    <div className="suggestions" aria-label="پیشنهادهایی برای شروع">
+      {starters.map(({ icon: Icon, title, prompt }) => (
+        <button key={title} onClick={() => prepare(prompt)}>
+          <Icon />
+          {title}
+        </button>
+      ))}
     </div>
   );
 }

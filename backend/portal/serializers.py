@@ -13,7 +13,24 @@ class ModelSerializer(serializers.ModelSerializer):
     reasoning_supported = serializers.BooleanField(read_only=True, allow_null=True)
 
     def to_representation(self, instance):
-        return super().to_representation(runtime_model(instance))
+        model = runtime_model(instance)
+        data = super().to_representation(model)
+        if (
+            self.context.get("request")
+            and self.context["request"].query_params.get("catalog") == "1"
+        ):
+            conn = instance.connection
+            data["provider_group"] = (
+                conn.get_discovery_type_display()
+                if conn
+                else instance.get_provider_display()
+            )
+            data["available"] = (
+                model.can_chat
+                and data["reasoning_profile"]["available"]
+                and (instance.provider == "demo" or bool(conn and conn.enabled))
+            )
+        return data
 
     class Meta:
         model = LanguageModel
@@ -60,6 +77,11 @@ class MessageSerializer(serializers.ModelSerializer):
             "elapsed_ms",
             "cost_rial",
             "free_tariff",
+            "feedback",
+            "cached_input_tokens",
+            "limited_output_tokens",
+            "input_price_snapshot_rial",
+            "output_price_snapshot_rial",
             "billing_status",
             "billing_source",
             "thinking_level",
@@ -78,7 +100,7 @@ class ConversationSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Conversation
-        fields = ["id", "title", "created_at", "is_processing"]
+        fields = ["id", "title", "created_at", "is_processing", "pinned"]
 
 
 class BranchSelectionSerializer(serializers.Serializer):

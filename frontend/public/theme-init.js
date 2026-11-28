@@ -13,6 +13,4 @@
         ? "dark"
         : "light";
   document.documentElement.dataset.theme = theme;
-  document.querySelector('meta[name="theme-color"]').content =
-    theme === "dark" ? "#121c18" : "#f8faf9";
 })();

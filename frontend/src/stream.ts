@@ -15,10 +15,12 @@ export type ChatEvent = {
   conversation_id: number;
   model_id?: number;
   text?: string;
+  limited_output_tokens?: number | null;
   elapsed_ms?: number | null;
   detail?: string;
   usage?: Pick<
     Message,
+    | "cached_input_tokens"
     | "input_tokens"
     | "output_tokens"
     | "reasoning_tokens"
@@ -27,7 +29,12 @@ export type ChatEvent = {
   >;
   billing?: Pick<
     Message,
-    "free_tariff" | "cost_rial" | "billing_status" | "billing_source"
+    | "input_price_snapshot_rial"
+    | "output_price_snapshot_rial"
+    | "free_tariff"
+    | "cost_rial"
+    | "billing_status"
+    | "billing_source"
   >;
   credit?: Credit;
   status?: string;

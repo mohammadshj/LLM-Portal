@@ -5,7 +5,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { Activity, Box, CircleCheck, Expand, RotateCcw } from "lucide-react";
+import {
+  Activity,
+  Box,
+  CircleCheck,
+  Expand,
+  RotateCcw,
+  ThumbsUp,
+  ThumbsDown,
+  Square,
+  Ellipsis,
+  TriangleAlert,
+} from "lucide-react";
 import { UserTurn, type VersionActions } from "./UserTurn";
 import type { Message } from "./types";
 import { CopyButton, Dialog, number } from "./ui";
@@ -39,7 +50,48 @@ function ResponseCost({ m }: { m: Message }) {
               : m.billing_source === "partial"
                 ? " · مصرف ناقص"
                 : " · برآوردی");
-  return <small className="response-cost">{label}</small>;
+  return (
+    <details className="usage">
+      <summary className="response-cost">{label} · جزئیات</summary>
+      <dl>
+        {(
+          [
+            ["ورودی", m.input_tokens],
+            ["خروجی", m.output_tokens],
+            ["استدلال", m.reasoning_tokens],
+            ["کل توکن‌ها", m.total_tokens],
+          ] as const
+        ).map(([key, v]) => (
+          <div key={key}>
+            <dt>{key}</dt>
+            <dd>{v == null || m.status === "running" ? "—" : number(v)}</dd>
+          </div>
+        ))}
+        {m.cached_input_tokens != null && (
+          <div>
+            <dt>ورودی از کش</dt>
+            <dd>{number(m.cached_input_tokens)}</dd>
+          </div>
+        )}
+      </dl>
+      <small>
+        {m.usage_source === "reported"
+          ? "گزارش سرویس"
+          : m.usage_source === "partial"
+            ? "گزارش ناقص"
+            : m.usage_source?.includes("estimat")
+              ? "شامل برآورد"
+              : "مصرف نامشخص"}
+      </small>
+      {m.input_price_snapshot_rial != null &&
+        m.output_price_snapshot_rial != null && (
+          <p>
+            تعرفهٔ هر میلیون توکن · ورودی {money(m.input_price_snapshot_rial)} ·
+            خروجی {money(m.output_price_snapshot_rial)}
+          </p>
+        )}
+    </details>
+  );
 }
 function ResponseBody({ m }: { m: Message }) {
   const [open, setOpen] = useState(m.status === "running");
@@ -74,7 +126,17 @@ function ResponseBody({ m }: { m: Message }) {
           <i />
         </div>
       )}
-      {m.error && <p className="error">{m.error}</p>}
+      {m.limited_output_tokens != null && (
+        <small className="limit-note">
+          متناسب با اعتبار، سقف این پاسخ {number(m.limited_output_tokens)} توکن
+          است.
+        </small>
+      )}
+      {m.error && (
+        <p className="error">
+          <TriangleAlert /> {m.error}
+        </p>
+      )}
     </>
   );
 }
@@ -83,11 +145,29 @@ const ResponseCard = memo(function ResponseCard({
   m,
   question,
   retry,
+  actions,
 }: {
+  actions: VersionActions;
   m: Message;
   question?: Message;
   retry?: Retry;
 }) {
+  const [stopping, setStopping] = useState(false);
+  const [options, setOptions] = useState(false);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [feedbackError, setFeedbackError] = useState("");
+  async function vote(value: "up" | "down") {
+    if (feedbackBusy) return;
+    setFeedbackBusy(true);
+    setFeedbackError("");
+    try {
+      await actions.feedback(m.id, m.feedback === value ? "" : value);
+    } catch {
+      setFeedbackError("ثبت بازخورد ممکن نشد. دوباره تلاش کنید.");
+    } finally {
+      setFeedbackBusy(false);
+    }
+  }
   const [expanded, setExpanded] = useState(false);
   const body = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -152,8 +232,84 @@ const ResponseCard = memo(function ResponseCard({
         </div>
       </div>
       <footer>
+        {question?.request_id &&
+          m.model_id &&
+          (m.id > 0 || m.started) &&
+          m.status === "running" && (
+            <button
+              className="icon"
+              title="توقف همین مدل"
+              aria-label="توقف همین مدل"
+              disabled={stopping}
+              onClick={async () => {
+                setStopping(true);
+                try {
+                  await actions.stopModel(question.request_id!, m.model_id!);
+                } catch {
+                  setStopping(false);
+                  setFeedbackError("ثبت توقف ممکن نشد. دوباره تلاش کنید.");
+                }
+              }}
+            >
+              <Square />
+            </button>
+          )}
         {m.content && <CopyButton text={m.content} label="کپی پاسخ" />}
         <ResponseCost m={m} />
+        {m.id > 0 && m.status !== "running" && (
+          <div className="response-actions">
+            {(["up", "down"] as const).map((value) => (
+              <button
+                key={value}
+                className="icon"
+                disabled={feedbackBusy}
+                onClick={() => vote(value)}
+                title={value === "up" ? "مفید بود" : "مفید نبود"}
+                aria-label={value === "up" ? "مفید بود" : "مفید نبود"}
+                aria-pressed={m.feedback === value}
+              >
+                {value === "up" ? <ThumbsUp /> : <ThumbsDown />}
+              </button>
+            ))}
+            {question && m.model_id && (
+              <button
+                className="icon"
+                title="عملیات پاسخ"
+                aria-label="عملیات پاسخ"
+                onClick={() => setOptions(true)}
+              >
+                <Ellipsis />
+              </button>
+            )}
+          </div>
+        )}
+        {feedbackError && <small role="alert">{feedbackError}</small>}
+        {options && question && (
+          <Dialog title="عملیات پاسخ" onClose={() => setOptions(false)}>
+            <div className="dialog-form">
+              <p>
+                تولید مجدد، نسخهٔ تازه‌ای با همین مدل می‌سازد و مصرف جداگانه
+                دارد.
+              </p>
+              <button
+                disabled={actions.locked}
+                onClick={() => {
+                  setOptions(false);
+                  actions.save({
+                    question,
+                    content: question.content,
+                    replies: [m],
+                    onlyModel: m.model_id!,
+                    changeModels: false,
+                  });
+                }}
+              >
+                <RotateCcw />
+                تولید مجدد پاسخ
+              </button>
+            </div>
+          </Dialog>
+        )}
         {retry &&
           question &&
           (m.status === "failed" || m.status === "cancelled") && (
@@ -233,7 +389,12 @@ function Turn({
             className="compare-column"
             data-visible={i === Math.min(tab, replies.length - 1)}
           >
-            <ResponseCard m={m} question={question} retry={retry} />
+            <ResponseCard
+              m={m}
+              question={question}
+              retry={retry}
+              actions={actions}
+            />
           </div>
         ))}
       </div>

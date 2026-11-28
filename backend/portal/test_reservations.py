@@ -110,6 +110,28 @@ class ReservationTests(TransactionTestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             self.assertCountEqual(pool.map(worker, self.chats), ["reserved", "quota"])
 
+    @skipUnlessDBFeature("has_select_for_update")
+    def test_parallel_adaptive_jobs_cannot_reuse_the_same_balance(self):
+        self.model.adaptive_min_output = 4
+        self.model.save(update_fields=["adaptive_min_output"])
+        change_credit(self.user.pk, "set", 100, "adaptive race", "test")
+        barrier = Barrier(2)
+
+        def submit(chat):
+            try:
+                barrier.wait(timeout=10)
+                _, jobs = self.reserve(chat)
+                return jobs[0].reply.reserved_credit_rial
+            except ValidationError:
+                return 0
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            self.assertCountEqual(pool.map(submit, self.chats), [100, 0])
+        self.account.refresh_from_db()
+        self.assertEqual(self.account.credit_reserved_rial, 100)
+
     def test_second_send_in_active_chat_conflicts_even_with_available_credit(self):
         self.reserve(self.chats[0])
         with self.assertRaises(RequestConflict):

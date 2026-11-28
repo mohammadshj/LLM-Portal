@@ -133,6 +133,13 @@ class LanguageModel(models.Model):
     max_output_tokens = models.PositiveIntegerField(default=512)
     enabled = models.BooleanField(default=True)
 
+    adaptive_min_output = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name="حداقل خروجی تأییدشده برای کاهش سقف",
+        help_text="فقط برای مدلی که سقف خروجی ارسالی را رعایت می‌کند. خالی یعنی رزرو کامل.",
+        validators=[MinValueValidator(1)],
+    )
     tokenizer_name = models.SlugField(
         blank=True, help_text="نام فایل tokenizer.json محلی و تأییدشده، بدون پسوند"
     )
@@ -205,6 +212,14 @@ class LanguageModel(models.Model):
                 raise ValidationError(
                     {"model_id": "این شناسه قبلاً در همین اتصال ثبت شده است."}
                 )
+        if (
+            self.adaptive_min_output
+            and self.max_output_tokens
+            and self.adaptive_min_output > self.max_output_tokens
+        ):
+            raise ValidationError(
+                {"adaptive_min_output": "حداقل خروجی از سقف خروجی مدل بیشتر است."}
+            )
         validate_overrides(self.capability_overrides)
         validate_capabilities(self)
         validate_reasoning_overrides(self)
@@ -228,6 +243,7 @@ class RegistrySnapshot(models.Model):
 
 
 class Conversation(models.Model):
+    pinned = models.BooleanField(default=False)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     title = models.CharField(max_length=100)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -237,6 +253,11 @@ class Conversation(models.Model):
 
 
 class Message(models.Model):
+    feedback = models.CharField(
+        max_length=4, blank=True, choices=[("up", "مفید"), ("down", "نامفید")]
+    )
+    cached_input_tokens = models.PositiveIntegerField(null=True, editable=False)
+    limited_output_tokens = models.PositiveIntegerField(null=True, editable=False)
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, related_name="messages"
     )

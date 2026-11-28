@@ -1,9 +1,15 @@
 import os
+import json
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+BRAND_DIR = BASE_DIR / "brand"
+if not BRAND_DIR.is_dir():
+    BRAND_DIR = BASE_DIR.parent / "frontend/public/brand"
+PORTAL_BRAND = json.loads((BRAND_DIR / "settings.json").read_text())
+STATICFILES_DIRS = [("brand", BRAND_DIR)]
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "")
 if not SECRET_KEY:
@@ -36,7 +42,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [

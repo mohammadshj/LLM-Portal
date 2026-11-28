@@ -1,7 +1,10 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowUp,
-  Boxes,
+  Cpu,
+  Server,
+  Clock3,
+  Info,
   Check,
   ChevronDown,
   Search,
@@ -9,6 +12,7 @@ import {
   Square,
   X,
 } from "lucide-react";
+import { available, type Mode } from "./preferences";
 import { money, priced } from "./credit";
 import { ReasoningControls } from "./ReasoningControls";
 import { ready } from "./reasoning";
@@ -16,6 +20,8 @@ import type { Model, ReasoningSettings } from "./types";
 import { Dialog, number, useMedia } from "./ui";
 
 type SelectorProps = {
+  mode: Mode;
+  recent: number[];
   models: Model[];
   selected: number[];
   thinking?: Record<number, ReasoningSettings>;
@@ -24,6 +30,8 @@ type SelectorProps = {
 };
 function ModelSelector({
   models,
+  mode,
+  recent,
   selected,
   thinking,
   choose,
@@ -34,6 +42,18 @@ function ModelSelector({
   const matching = models.filter((m) =>
     m.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
   );
+  const groups = new Map<string, Model[]>();
+  for (const m of matching) {
+    const key = recent.includes(m.id)
+      ? "اخیراً استفاده‌شده"
+      : m.provider_group || m.provider;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(m);
+  }
+  const recentGroup = "اخیراً استفاده‌شده";
+  const ordered = [...groups].sort(
+    ([a], [b]) => Number(b === recentGroup) - Number(a === recentGroup),
+  );
   const advanced = models.filter(
     (m) =>
       selected.includes(m.id) &&
@@ -43,7 +63,9 @@ function ModelSelector({
     <Dialog title="انتخاب مدل‌ها" onClose={close}>
       <div className="dialog-form">
         <p className="muted">
-          یک مدل برای گفتگو یا حداکثر سه مدل برای مقایسه انتخاب کنید.
+          {mode === "chat"
+            ? "برای این گفتگو یک مدل انتخاب کنید."
+            : "برای مقایسه دو یا سه مدل انتخاب کنید."}
         </p>
         <label className="search">
           <Search />
@@ -56,48 +78,70 @@ function ModelSelector({
           />
         </label>
         <div className="model-list">
-          {matching.map((m) => {
-            const checked = selected.includes(m.id);
-            return (
-              <label
-                key={m.id}
-                className="model-option"
-                data-selected={checked}
-              >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  aria-label={m.name}
-                  disabled={!checked && (selected.length >= 3 || !priced(m))}
-                  onChange={() =>
-                    choose(
-                      checked
-                        ? selected.filter((id) => id !== m.id)
-                        : [...selected, m.id],
-                    )
-                  }
-                />
-                <bdi>{m.name}</bdi>
-                <small>
-                  {priced(m)
-                    ? "برای یک میلیون توکن · ورودی " +
-                      money(m.input_price_per_million_rial!) +
-                      "، خروجی " +
-                      money(m.output_price_per_million_rial!)
-                    : "تعرفه تعیین نشده"}
-                </small>
-                {m.provider === "demo" ? (
-                  <small>نمایشی</small>
-                ) : m.reasoning_supported === null ? (
-                  <small>استدلال نامعلوم</small>
-                ) : m.reasoning_supported === true &&
-                  !m.reasoning_profile.controls.length &&
-                  m.reasoning_profile.mode !== "fixed" ? (
-                  <small>سطح قابل ارسال مشخص نشده</small>
-                ) : null}
-              </label>
-            );
-          })}
+          {ordered.map(([group, rows]) => (
+            <section key={group}>
+              <h3 className="section-label">
+                {group === recentGroup ? <Clock3 /> : <Server />}
+                {group}
+              </h3>
+              {rows.map((m) => {
+                const checked = selected.includes(m.id);
+                const rate = priced(m)
+                  ? "تعرفهٔ یک میلیون توکن · ورودی " +
+                    money(m.input_price_per_million_rial!) +
+                    "، خروجی " +
+                    money(m.output_price_per_million_rial!)
+                  : "تعرفه تعیین نشده";
+                return (
+                  <div
+                    className="model-option"
+                    data-selected={checked}
+                    key={m.id}
+                  >
+                    <label>
+                      <input
+                        type="checkbox"
+                        aria-label={m.name}
+                        checked={checked}
+                        disabled={
+                          !available(m) ||
+                          (!checked &&
+                            mode === "compare" &&
+                            selected.length >= 3)
+                        }
+                        onChange={() =>
+                          choose(
+                            checked
+                              ? selected.filter((id) => id !== m.id)
+                              : mode === "chat"
+                                ? [m.id]
+                                : [...selected, m.id],
+                          )
+                        }
+                      />
+                      <bdi>{m.name}</bdi>
+                    </label>
+                    {!available(m) ? (
+                      <small>غیرقابل دسترس</small>
+                    ) : m.reasoning_supported === true ? (
+                      <small>استدلال</small>
+                    ) : null}
+                    <details className="model-info">
+                      <summary
+                        aria-label={"مشخصات " + m.name}
+                        title="مشخصات و تعرفه"
+                      >
+                        <Info />
+                      </summary>
+                      <small>
+                        {m.provider_group} · {rate}
+                      </small>
+                    </details>
+                  </div>
+                );
+              })}
+            </section>
+          ))}
           {!matching.length && <p>مدلی پیدا نشد.</p>}
         </div>
         {!!advanced.length && (
@@ -119,7 +163,11 @@ function ModelSelector({
           </details>
         )}
         <div className="line">
-          <small>{number(selected.length)} از ۳ مدل</small>
+          <small>
+            {mode === "compare"
+              ? number(selected.length) + " از ۳ مدل"
+              : "گفتگوی تک‌مدلی"}
+          </small>
           <button className="primary" onClick={close}>
             <Check /> انجام شد
           </button>
@@ -159,7 +207,7 @@ export function ChatComposer(
     !processing &&
     !locked &&
     !!prompt.trim() &&
-    !!selected.length &&
+    selected.length >= (props.mode === "compare" ? 2 : 1) &&
     !props.exhausted &&
     reasoningReady;
   return (
@@ -207,7 +255,7 @@ export function ChatComposer(
             disabled={processing || props.modelsLoading}
             onClick={() => setPicker(true)}
           >
-            <Boxes /> انتخاب مدل <ChevronDown />
+            <Cpu /> انتخاب مدل <ChevronDown />
           </button>
           <div className="chips">
             {selected.map((id) => {
@@ -248,6 +296,7 @@ export function ChatComposer(
               className="primary send"
               type="submit"
               disabled={!canSend}
+              title="ارسال پیام"
               aria-label={
                 selected.length > 1 ? "مقایسهٔ پاسخ‌ها" : "ارسال پیام"
               }
@@ -269,7 +318,9 @@ export function ChatComposer(
                 ? "تنظیمات استدلال مدل انتخابی را بررسی کنید."
                 : !selected.length && models.length
                   ? "برای ارسال، یک مدل انتخاب کنید."
-                  : "تاریخچهٔ گفتگو تا ۳۰ روز نگهداری می‌شود."}
+                  : props.mode === "compare" && selected.length < 2
+                    ? "برای مقایسه دست‌کم دو مدل انتخاب کنید."
+                    : ""}
         <span>
           {prompt.length > 10000
             ? number(prompt.length) + " / ۱۲٬۰۰۰"

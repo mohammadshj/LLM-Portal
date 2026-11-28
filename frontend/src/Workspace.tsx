@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Activity,
   ChartColumn,
   ChevronLeft,
-  LayoutDashboard,
+  MessagesSquare,
+  Columns2,
+  CircleAlert,
   Menu,
   PanelRightOpen,
   Plus,
@@ -14,23 +24,32 @@ import { ChatComposer } from "./ChatComposer";
 import { MessageList } from "./MessageList";
 import { ManageConversation, Sidebar } from "./Sidebar";
 import { ThemeToggle } from "./ThemeToggle";
-import { Thread, Welcome } from "./Thread";
-import { applyCredit, priced } from "./credit";
-import { CostEstimate } from "./CostEstimate";
-import type { User, Model, Conversation } from "./types";
+import { Thread, Welcome, Suggestions } from "./Thread";
+import { applyCredit } from "./credit";
+import { available, readPreferences, remember, type Mode } from "./preferences";
+import { Brand } from "./Brand";
+import { downloadChat } from "./exportChat";
+import type { User, Model, Conversation, Detail } from "./types";
 import { Dialog, useMedia } from "./ui";
-import { UsageReport } from "./UsageReport";
 import { ready } from "./reasoning";
 import { useChats } from "./useChats";
 import { useHistory } from "./useHistory";
 
+const UsageReport = lazy(() =>
+  import("./UsageReport").then((module) => ({ default: module.UsageReport })),
+);
+
 export function Workspace({
   theme,
+  themeChoice,
+  selectTheme,
   toggle,
   initialUser,
   onLogout,
 }: {
   theme: "light" | "dark";
+  themeChoice: "light" | "dark" | "system";
+  selectTheme: (v: "light" | "dark" | "system") => void;
   toggle: () => void;
   initialUser: User;
   onLogout: () => void;
@@ -46,7 +65,17 @@ export function Workspace({
     new URLSearchParams(location.search).has("billing"),
   );
   const [loggingOut, setLoggingOut] = useState(false);
-  const [collapsed, setCollapsed] = useState(false);
+  const [prefs, setPrefs] = useState(() =>
+    readPreferences(initialUser.username),
+  );
+  const collapsed = prefs.collapsed;
+  function setCollapsed(value: boolean) {
+    setPrefs((p) => ({ ...p, collapsed: value }));
+  }
+  useEffect(
+    () => remember(initialUser.username, prefs),
+    [initialUser.username, prefs],
+  );
   const [drawer, setDrawer] = useState(false);
   const [manage, setManage] = useState<Conversation | null>(null);
   const [notice, setNotice] = useState("");
@@ -65,7 +94,7 @@ export function Workspace({
     const controller = new AbortController();
     setModelsLoading(true);
     setModelError("");
-    api<Model[]>("models/", "GET", undefined, controller.signal)
+    api<Model[]>("models/?catalog=1", "GET", undefined, controller.signal)
       .then(setModels)
       .catch((e) => {
         if (!controller.signal.aborted) setModelError(e.message);
@@ -108,19 +137,52 @@ export function Workspace({
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, [refreshUsage]);
-  const chats = useChats(history.refresh, refreshUsage, (snapshot) =>
-    setUser((old) => applyCredit(old, snapshot)),
+  const chats = useChats(
+    history.refresh,
+    refreshUsage,
+    (snapshot) => setUser((old) => applyCredit(old, snapshot)),
+    (ids) =>
+      setPrefs((p) => ({
+        ...p,
+        recent: [...new Set([...ids, ...p.recent])].slice(0, 6),
+      })),
   );
   const { activeId, chat, messages } = chats;
   const chatError = chat.readError || chat.error;
   const active = chat.detail ?? history.items.find((c) => c.id === activeId);
   const processing = chats.busy(activeId);
-  const selected =
-    chat.selection ??
-    models
-      .filter(priced)
-      .slice(0, 1)
-      .map((m) => m.id);
+  const previousModels = useMemo(() => {
+    const rows = chat.detail?.messages ?? [];
+    const ids: number[] = [];
+    for (let i = rows.length - 1; i >= 0 && rows[i].role === "assistant"; i--) {
+      if (rows[i].model_id != null) ids.unshift(rows[i].model_id!);
+    }
+    return ids;
+  }, [chat.detail?.messages]);
+  const mode = chat.mode ?? (previousModels.length > 1 ? "compare" : "chat");
+  const usable = models.filter(available);
+  function choices(target: Mode) {
+    const local = target === "chat" ? chat.single : chat.selection;
+    if (local) return local.filter((id) => usable.some((m) => m.id === id));
+    const prior = previousModels.filter((id) =>
+      usable.some((m) => m.id === id),
+    );
+    if (
+      (target === "chat" && prior.length === 1) ||
+      (target === "compare" && prior.length >= 2)
+    )
+      return prior;
+    const saved = prefs[target].filter((id) => usable.some((m) => m.id === id));
+    return saved.length
+      ? saved
+      : usable.slice(0, target === "chat" ? 1 : 2).map((m) => m.id);
+  }
+  const selected = choices(mode);
+  function choose(ids: number[], target = mode) {
+    chats.setMode(target, ids);
+    setPrefs((p) => ({ ...p, [target]: ids }));
+  }
+  const emptyStage = !chat.loading && !messages.length;
   const selectedModels = selected
     .map((id) => models.find((m) => m.id === id))
     .filter((m): m is Model => !!m);
@@ -153,12 +215,15 @@ export function Workspace({
   function prepare(text: string, modelId?: number | null) {
     chats.setPrompt(text);
     if (modelId && models.some((m) => m.id === modelId))
-      chats.setSelection([modelId]);
+      choose([modelId], "chat");
     document.getElementById("prompt")?.focus();
   }
   const side = (
     <Sidebar
       user={user}
+      themeChoice={themeChoice}
+      selectTheme={selectTheme}
+      onReport={openReport}
       history={history}
       activeId={activeId}
       busy={chats.busy}
@@ -180,6 +245,7 @@ export function Workspace({
         )
       ) : collapsed ? (
         <aside className="rail">
+          <Brand variant="icon" />
           <button
             className="icon"
             title="باز کردن نوار گفتگوها"
@@ -200,7 +266,7 @@ export function Workspace({
       ) : (
         side
       )}
-      <main className="workspace">
+      <main className="workspace" data-empty={emptyStage && !report}>
         <header className="workspace-head">
           {mobile && (
             <button
@@ -212,8 +278,8 @@ export function Workspace({
             </button>
           )}
           <div className="crumb">
-            <LayoutDashboard />
-            <span>میز کار</span>
+            {mobile ? <Brand variant="icon" /> : <MessagesSquare />}
+            <span>فضای کار</span>
             <ChevronLeft />
             <h1 dir="auto">
               {report ? "گزارش مصرف" : active?.title || "گفتگوی تازه"}
@@ -250,6 +316,7 @@ export function Workspace({
         </header>
         {(modelError || error || (!report && chatError)) && (
           <div className="error banner" role="alert">
+            <CircleAlert />
             {modelError || error || chatError}
             {modelError ? (
               <button onClick={() => setRetryModels((v) => v + 1)}>
@@ -274,98 +341,131 @@ export function Workspace({
         {report ? (
           <div className="report-wrap">
             <button onClick={() => change(() => {})}>بازگشت به گفتگو</button>
-            <UsageReport user={user} />
+            <Suspense fallback={<p role="status">در حال دریافت گزارش…</p>}>
+              <UsageReport user={user} />
+            </Suspense>
           </div>
         ) : (
           <>
-            <Thread
-              key={"thread-" + activeId}
-              id={activeId}
-              positions={positions.current}
-            >
-              {chat.loading && !messages.length ? (
-                <div
-                  className="skeleton"
-                  role="status"
-                  aria-label="در حال دریافت گفتگو"
+            <div className="chat-stage">
+              {emptyStage && <Welcome />}
+              <div className="mode-switch" role="group" aria-label="حالت گفتگو">
+                {(["chat", "compare"] as const).map((v) => (
+                  <button
+                    key={v}
+                    disabled={processing}
+                    aria-pressed={mode === v}
+                    onClick={() => choose(choices(v), v)}
+                  >
+                    {v === "chat" ? <MessagesSquare /> : <Columns2 />}
+                    {v === "chat" ? "گفتگو" : "مقایسه مدل‌ها"}
+                  </button>
+                ))}
+              </div>
+              {!emptyStage && (
+                <Thread
+                  key={"thread-" + activeId}
+                  id={activeId}
+                  positions={positions.current}
                 >
-                  <i />
-                  <i />
-                  <i />
-                </div>
-              ) : !messages.length ? (
-                <Welcome prepare={prepare} />
-              ) : (
-                <MessageList
-                  actions={{
-                    versions: chat.detail?.versions ?? {},
-                    locked: !!(
-                      processing ||
-                      chat.switching ||
-                      chat.loading ||
-                      chat.removing ||
-                      chat.live
-                    ),
-                    canUseSelection:
-                      selectedModels.length > 0 &&
-                      selectedModels.every((m) =>
-                        ready(m.reasoning_profile, chat.thinking?.[m.id]),
-                      ),
-                    selectedNames: selectedModels.map((m) => m.name).join("، "),
-                    save: (revision) => {
-                      keepScroll();
-                      void chats.send(selectedModels, revision);
-                    },
-                    select: (anchor, target) => {
-                      keepScroll();
-                      void chats.switchVersion(anchor, target);
-                    },
-                  }}
-                  messages={messages}
-                  retry={processing ? undefined : prepare}
-                />
+                  {chat.loading && !messages.length ? (
+                    <div
+                      className="skeleton"
+                      role="status"
+                      aria-label="در حال دریافت گفتگو"
+                    >
+                      <i />
+                      <i />
+                      <i />
+                    </div>
+                  ) : (
+                    <MessageList
+                      actions={{
+                        stopModel: async (request, model) => {
+                          await api(
+                            `conversations/${activeId}/requests/${request}/models/${model}/cancel/`,
+                            "POST",
+                            {},
+                          );
+                        },
+                        feedback: async (id, value) => {
+                          await api(
+                            `conversations/${activeId}/messages/${id}/feedback/`,
+                            "PUT",
+                            { feedback: value },
+                          );
+                          chats.setFeedback(activeId, id, value);
+                        },
+                        versions: chat.detail?.versions ?? {},
+                        locked: !!(
+                          processing ||
+                          chat.switching ||
+                          chat.loading ||
+                          chat.removing ||
+                          chat.live
+                        ),
+                        canUseSelection:
+                          selectedModels.length > 0 &&
+                          selectedModels.every((m) =>
+                            ready(m.reasoning_profile, chat.thinking?.[m.id]),
+                          ),
+                        selectedNames: selectedModels
+                          .map((m) => m.name)
+                          .join("، "),
+                        save: (revision) => {
+                          keepScroll();
+                          void chats.send(selectedModels, revision);
+                        },
+                        select: (anchor, target) => {
+                          keepScroll();
+                          void chats.switchVersion(anchor, target);
+                        },
+                      }}
+                      messages={messages}
+                      retry={processing ? undefined : prepare}
+                    />
+                  )}
+                </Thread>
               )}
-            </Thread>
-            <CostEstimate
-              chatId={activeId}
-              prompt={chat.prompt}
-              models={selectedModels}
-              thinking={chat.thinking}
-              leaf={chat.detail?.active_leaf}
-              busy={processing || !!chat.loading}
-            />
-            <ChatComposer
-              key={"composer-" + activeId}
-              models={models}
-              selected={selected}
-              thinking={chat.thinking}
-              choose={chats.setSelection}
-              setThinking={chats.setThinking}
-              prompt={chat.prompt}
-              setPrompt={chats.setPrompt}
-              processing={processing}
-              stopping={!!chat.live?.stopping}
-              locked={
-                !!(
-                  chat.loading ||
-                  chat.removing ||
-                  chat.switching ||
-                  (chat.live && !processing)
-                )
-              }
-              modelsLoading={modelsLoading}
-              exhausted={
-                !quotaStale &&
-                user.credit_available_rial === 0 &&
-                selectedModels.some(
-                  (m) =>
-                    m.input_price_per_million_rial ||
-                    m.output_price_per_million_rial,
-                )
-              }
-              send={() => void chats.send(selectedModels)}
-              stop={chats.stop}
-            />
+              <ChatComposer
+                key={"composer-" + activeId}
+                models={models}
+                selected={selected}
+                thinking={chat.thinking}
+                mode={mode}
+                recent={prefs.recent}
+                choose={choose}
+                setThinking={chats.setThinking}
+                prompt={chat.prompt}
+                setPrompt={chats.setPrompt}
+                processing={processing}
+                stopping={!!chat.live?.stopping}
+                locked={
+                  !!(
+                    chat.loading ||
+                    chat.removing ||
+                    chat.switching ||
+                    (chat.live && !processing)
+                  )
+                }
+                modelsLoading={modelsLoading}
+                exhausted={
+                  !quotaStale &&
+                  user.credit_available_rial === 0 &&
+                  selectedModels.some(
+                    (m) =>
+                      m.input_price_per_million_rial ||
+                      m.output_price_per_million_rial,
+                  )
+                }
+                send={() => {
+                  chats.setMode(mode, selected);
+                  void chats.send(selectedModels);
+                }}
+                stop={chats.stop}
+              />
+              {emptyStage && <Suggestions prepare={prepare} />}
+            </div>
           </>
         )}
       </main>
@@ -375,6 +475,16 @@ export function Workspace({
           item={manage}
           busy={chats.busy(manage.id, manage.is_processing)}
           close={() => setManage(null)}
+          onPin={async () => {
+            await api(`conversations/${manage.id}/`, "PATCH", {
+              pinned: !manage.pinned,
+            });
+            history.refresh();
+            setNotice(manage.pinned ? "سنجاق برداشته شد." : "گفتگو سنجاق شد.");
+          }}
+          onExport={async () =>
+            downloadChat(await api<Detail>(`conversations/${manage.id}/`))
+          }
           onRename={async (title) => {
             const saved = await api<Conversation>(
               `conversations/${manage.id}/`,

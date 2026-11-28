@@ -43,6 +43,7 @@ class ProviderEvent:
     output_tokens: int | None = None
     total_tokens: int | None = None
     reasoning_tokens: int | None = None
+    cached_input_tokens: int | None = None
 
 
 def _log(model, code, status, started, *, warning=True):
@@ -172,6 +173,7 @@ def _usage_event(data, details):
             output_tokens=counts.outgoing,
             total_tokens=counts.total,
             reasoning_tokens=counts.reasoning,
+            cached_input_tokens=counts.cached,
         )
 
 

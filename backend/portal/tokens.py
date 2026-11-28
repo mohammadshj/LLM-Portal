@@ -41,6 +41,7 @@ class Usage:
     outgoing: int | None
     total: int | None
     reasoning: int | None = None
+    cached: int | None = None
 
 
 def valid_count(value):
@@ -71,4 +72,12 @@ def parse_usage(data):
         reasoning = None
     if all(v is None for v in (first, last, total, reasoning)):
         return None
-    return Usage(first, last, total, reasoning)
+    input_details = data.get("prompt_tokens_details", data.get("input_tokens_details"))
+    cached = (
+        input_details.get("cached_tokens") if isinstance(input_details, dict) else None
+    )
+    if cached is None:
+        cached = data.get("prompt_cache_hit_tokens")
+    if not valid_count(cached) or first is None or cached > first:
+        cached = None
+    return Usage(first, last, total, reasoning, cached)

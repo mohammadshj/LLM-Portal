@@ -28,6 +28,7 @@ from .serializers import (
     SendSerializer,
 )
 from .services import delete_conversation, request_cancel, reserve_turn, select_version
+from .services import request_model_cancel
 from .streaming import EventStreamResponse, TurnStream, send_message
 
 
@@ -114,7 +115,7 @@ class Conversations(generics.ListCreateAPIView):
                 created_at__gte=timezone.now() - timedelta(days=30),
             )
             .annotate(is_processing=Exists(running))
-            .order_by("-created_at", "-pk")
+            .order_by("-pinned", "-created_at", "-pk")
         )
 
     def perform_create(self, serializer):
@@ -153,20 +154,45 @@ def cancel_generation(request, pk, request_id):
     return Response({"status": "cancelling" if cancelling else "finished"})
 
 
+@api_view(["POST"])
+def cancel_model(request, pk, request_id, model_id):
+    chat = owned_conversation(request, pk)
+    stopping = request_model_cancel(request.user, chat, request_id, model_id)
+    return Response({"status": "cancelling" if stopping else "finished"})
+
+
+@api_view(["PUT"])
+def response_feedback(request, pk, message_id):
+    chat = owned_conversation(request, pk)
+    value = request.data.get("feedback") if isinstance(request.data, dict) else None
+    if value not in ("up", "down", ""):
+        return Response({"detail": "بازخورد معتبر انتخاب کنید."}, status=400)
+    updated = (
+        chat.messages.filter(pk=message_id, role="assistant")
+        .exclude(status="running")
+        .update(feedback=value)
+    )
+    if not updated:
+        return Response(status=404)
+    return Response({"feedback": value})
+
+
 @api_view(["GET", "POST", "PATCH", "DELETE"])
 def conversation_detail(request, pk):
     conversation = owned_conversation(request, pk)
     if request.method == "PATCH":
-        serializer = ConversationSerializer(data=request.data)
+        serializer = ConversationSerializer(
+            conversation, data=request.data, partial=True
+        )
         serializer.is_valid(raise_exception=True)
-        title = serializer.validated_data["title"]
-        # Update only the title, even if retention removed the row concurrently.
-        updated = Conversation.objects.filter(
-            pk=conversation.pk, user=request.user
-        ).update(title=title)
-        if not updated:
+        changes = serializer.validated_data
+        if not changes:
+            return Response(
+                {"detail": "عنوان یا وضعیت سنجاق را مشخص کنید."}, status=400
+            )
+        if not Conversation.objects.filter(pk=pk, user=request.user).update(**changes):
             return Response(status=404)
-        conversation.title = title
+        conversation.refresh_from_db()
         return Response(ConversationSerializer(conversation).data)
     if request.method == "DELETE":
         delete_conversation(request.user, conversation)

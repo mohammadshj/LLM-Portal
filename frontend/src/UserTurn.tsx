@@ -6,6 +6,8 @@ import type { Message } from "./types";
 import type { Revision } from "./useChats";
 
 export type VersionActions = {
+  stopModel: (request: string, model: number) => Promise<void>;
+  feedback: (id: number, value: "up" | "down" | "") => Promise<void>;
   versions: Record<number, number[]>;
   locked: boolean;
   canUseSelection: boolean;

@@ -1,6 +1,19 @@
 import { createRequire } from "node:module";
+import brand from "./public/brand/settings.json";
 import { defineConfig } from "vite";
 export default defineConfig({
+  plugins: [
+    {
+      name: "portal-brand",
+      transformIndexHtml: {
+        order: "pre",
+        handler: (html) =>
+          html
+            .replace("%PORTAL_NAME%", brand.product)
+            .replace("%PORTAL_ICON%", brand.symbol),
+      },
+    },
+  ],
   // Parse KaTeX output as an AST. The browser entry parses inline styles through
   // template.innerHTML and triggers CSP even on a detached template.
   resolve: {

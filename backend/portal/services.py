@@ -45,7 +45,9 @@ def _turn_status(turn):
         return "completed"
     if "completed" in statuses:
         return "partial"
-    return "cancelled" if turn.cancel_requested else "failed"
+    return (
+        "cancelled" if turn.cancel_requested or statuses == {"cancelled"} else "failed"
+    )
 
 
 def _close_turn_if_done(turn):
@@ -128,6 +130,29 @@ def request_cancel(user, conversation, request_id):
             request_id=request_id,
             status="running",
         ).update(cancel_requested=True)
+    )
+
+
+@transaction.atomic
+def request_model_cancel(user, conversation, request_id, model_id):
+    # Serialize the decision with settlement, including a last delta racing a Stop.
+    _locked_account(user.pk)
+    turn = (
+        Message.objects.select_for_update()
+        .filter(
+            conversation=conversation,
+            conversation__user=user,
+            request_id=request_id,
+            role="user",
+            status="running",
+        )
+        .first()
+    )
+    return bool(
+        turn
+        and turn.replies.filter(model_id=model_id, status="running").update(
+            cancel_requested=True
+        )
     )
 
 
@@ -235,8 +260,56 @@ def _admission_plan(chat, models, content, thinking, reasoning, history_ids):
             raise ValidationError(
                 "ظرفیت گفتگو برای مدل انتخابی کافی نیست؛ گفتگوی تازه بسازید."
             )
-        plans.append((model, messages, bound, hold, level, origin, settings))
+        plans.append((model, messages, bound, level, origin, settings))
     return plans
+
+
+def priced_outputs(plans, available, estimate):
+    """Scale only verified caps. All models receive the same fraction of their extra output."""
+    budgets = {}
+    for model, _, bound, _, _, settings in plans:
+        maximum = model.max_output_tokens
+        # An explicit reasoning budget must still leave room for a final answer.
+        minimum = max(
+            model.adaptive_min_output or maximum, settings.get("budget", 0) + 1
+        )
+        if not model.output_price_per_million_rial:
+            minimum = maximum
+        budgets[model.pk] = (
+            bound,
+            min(minimum, maximum),
+            maximum,
+            model.input_price_per_million_rial,
+            model.output_price_per_million_rial,
+        )
+
+    scale = max(1, max(hi - lo for _, lo, hi, _, _ in budgets.values()))
+
+    def quote(step):
+        limits, holds = {}, {}
+        for pk, (bound, lo, hi, input_price, output_price) in budgets.items():
+            limits[pk] = lo + (hi - lo) * step // scale
+            holds[pk] = billing.calculate_cost(
+                bound, limits[pk], input_price, output_price
+            )
+        return limits, holds
+
+    full = quote(scale)
+    if estimate or sum(full[1].values()) <= available:
+        return full
+    minimum = quote(0)
+    if sum(minimum[1].values()) > available:
+        return (
+            minimum  # admission rejects this before writing messages or a reservation
+        )
+    low, high = 0, scale
+    while low < high:
+        mid = (low + high + 1) // 2
+        if sum(quote(mid)[1].values()) <= available:
+            low = mid
+        else:
+            high = mid - 1
+    return quote(low)
 
 
 def reserve_turn(
@@ -329,20 +402,12 @@ def reserve_turn(
         if len(models) != len(model_ids):
             raise ValidationError("یکی از مدل‌ها موجود یا فعال نیست.")
         plans = _admission_plan(chat, models, content, thinking, reasoning, history_ids)
+        available = billing.balance(account)["credit_available_rial"]
         try:
-            holds = {
-                model.pk: billing.calculate_cost(
-                    bound,
-                    model.max_output_tokens,
-                    model.input_price_per_million_rial,
-                    model.output_price_per_million_rial,
-                )
-                for model, _, bound, *_ in plans
-            }
+            limits, holds = priced_outputs(plans, available, estimate)
         except ConfigurationError as exc:
             raise ValidationError(exc.messages) from None
         required = sum(holds.values())
-        available = billing.balance(account)["credit_available_rial"]
         if estimate:
             return {
                 "required_rial": required,
@@ -372,7 +437,12 @@ def reserve_turn(
             lease_until=timezone.now() + LEASE,
         )
         jobs = []
-        for model, messages, bound, hold, level, origin, settings in plans:
+        for model, messages, bound, level, origin, settings in plans:
+            limit = limits[model.pk]
+            limited = limit if limit < model.max_output_tokens else None
+            model.max_output_tokens = (
+                limit  # Request-local snapshot shared by JSON and SSE.
+            )
             reply = Message.objects.create(
                 conversation=chat,
                 role="assistant",
@@ -380,7 +450,8 @@ def reserve_turn(
                 parent=turn,
                 status="running",
                 input_bound=bound,
-                reserved_tokens=hold,
+                reserved_tokens=bound + limit,
+                limited_output_tokens=limited,
                 reserved_credit_rial=holds[model.pk],
                 billing_status="reserved",
                 input_price_snapshot_rial=model.input_price_per_million_rial,
@@ -437,7 +508,9 @@ def _usage(reply, text, reasoning_bytes, usage):
             usage.reasoning or 0, min(reply.reserved_tokens - reply.input_bound, size)
         )
         source = "estimated" if usage.incoming is None else "estimate_out"
-    return Usage(incoming, outgoing, incoming + outgoing, usage.reasoning), source
+    return Usage(
+        incoming, outgoing, incoming + outgoing, usage.reasoning, usage.cached
+    ), source
 
 
 def finish_reply(
@@ -470,9 +543,9 @@ def finish_reply(
         reply = Message.objects.get(pk=reply_id)
         if reply.status != "running":
             return reply.status, reply.response_duration_ms  # Fence late writers.
-        if turn.cancel_requested or status == "cancelled":
+        if turn.cancel_requested or reply.cancel_requested or status == "cancelled":
             status = "cancelled"
-            if not turn.cancel_requested:
+            if not turn.cancel_requested and not reply.cancel_requested:
                 turn.cancel_requested = True
                 turn.save(update_fields=["cancel_requested"])
         counts, source = _usage(reply, text, reasoning_bytes, usage)
@@ -496,6 +569,7 @@ def finish_reply(
         reply.input_tokens = counts.incoming
         reply.output_tokens = counts.outgoing
         reply.total_tokens = counts.total
+        reply.cached_input_tokens = counts.cached
         reply.reasoning_tokens = counts.reasoning
         reply.reasoning_content = reasoning
         reply.usage_source = source
@@ -524,6 +598,7 @@ def finish_reply(
                 "usage_source",
                 "total_tokens",
                 "reasoning_tokens",
+                "cached_input_tokens",
                 "reasoning_content",
                 "error",
                 "reserved_tokens",

@@ -25,5 +25,13 @@ urlpatterns = [
         "conversations/<int:pk>/messages/<int:message_id>/versions/",
         views.message_versions,
     ),
+    path(
+        "conversations/<int:pk>/messages/<int:message_id>/feedback/",
+        views.response_feedback,
+    ),
+    path(
+        "conversations/<int:pk>/requests/<uuid:request_id>/models/<int:model_id>/cancel/",
+        views.cancel_model,
+    ),
     path("usage/", views.usage),
 ]

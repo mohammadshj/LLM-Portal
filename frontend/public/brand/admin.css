@@ -1,0 +1,24 @@
+.portal-admin-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.portal-admin-brand img {
+  height: 32px;
+  width: auto;
+}
+.portal-admin-brand .dark-logo,
+html[data-theme="dark"] .portal-admin-brand .light-logo {
+  display: none;
+}
+html[data-theme="dark"] .portal-admin-brand .dark-logo {
+  display: block;
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) .portal-admin-brand .dark-logo {
+    display: block;
+  }
+  html:not([data-theme="light"]) .portal-admin-brand .light-logo {
+    display: none;
+  }
+}

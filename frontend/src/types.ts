@@ -45,6 +45,8 @@ export type ReasoningProfile = {
   exclusive: (keyof ReasoningSettings)[];
 };
 export type Model = {
+  provider_group?: string;
+  available?: boolean;
   input_price_per_million_rial: number | null;
   output_price_per_million_rial: number | null;
   reasoning_profile: ReasoningProfile;
@@ -57,11 +59,19 @@ export type Model = {
   thinking_default: string;
 };
 export type Conversation = {
+  pinned?: boolean;
+  created_at?: string;
   id: number;
   title: string;
   is_processing?: boolean;
 };
 export type Message = {
+  started?: boolean;
+  feedback?: "" | "up" | "down";
+  cached_input_tokens?: number | null;
+  limited_output_tokens?: number | null;
+  input_price_snapshot_rial?: number | null;
+  output_price_snapshot_rial?: number | null;
   free_tariff?: boolean;
   cost_rial?: number | null;
   billing_source?: string;

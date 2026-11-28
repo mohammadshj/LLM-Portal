@@ -73,6 +73,40 @@ class ThinkingTests(TestCase):
         )
         self.assertFalse(Message.objects.exists())
 
+    def test_adaptive_budget_includes_reasoning_and_at_least_one_answer_token(self):
+        from .billing import change_credit
+
+        self.model.thinking_contract = "budget_tokens"
+        self.model.thinking_levels = ["high"]
+        self.model.thinking_budgets = {"high": 60}
+        self.model.thinking_default = "high"
+        self.model.output_price_per_million_rial = 1000000
+        self.model.adaptive_min_output = 10
+        self.model.save()
+        change_credit(self.user.pk, "grant", 60, "boundary", "test")
+        result = self.client.post(self.url, self.payload, format="json")
+        self.assertEqual(result.status_code, 400)
+        self.assertFalse(Message.objects.exists())
+        change_credit(self.user.pk, "grant", 1, "answer token", "test")
+        calls = []
+
+        def reply(req):
+            calls.append(json.loads(req.content))
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            )
+
+        with upstream(reply):
+            result = self.client.post(self.url, self.payload, format="json")
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.data["errors"], [])
+        self.assertEqual(calls[0]["thinking"]["budget_tokens"], 60)
+        self.assertEqual(calls[0]["max_tokens"], 61)
+
     def test_json_contract_replay_and_exact_usage(self):
         requests = []
 
@@ -88,6 +122,7 @@ class ThinkingTests(TestCase):
                         "prompt_tokens": 10,
                         "completion_tokens": 8,
                         "total_tokens": 18,
+                        "prompt_tokens_details": {"cached_tokens": 4},
                         "completion_tokens_details": {"reasoning_tokens": 6},
                     },
                 },
@@ -99,6 +134,8 @@ class ThinkingTests(TestCase):
                 response = self.client.post(self.url, self.payload, format="json")
                 self.assertEqual(response.status_code, 200)
                 reply = response.data["messages"][-1]
+                self.assertEqual(reply["cached_input_tokens"], 4)
+                self.assertEqual(reply["total_tokens"], 18)
                 self.assertEqual(
                     (
                         reply["thinking_level"],

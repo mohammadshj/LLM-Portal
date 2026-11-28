@@ -133,6 +133,10 @@ export function UsageReport({ user }: { user: User }) {
   const [page, setPage] = useState(1),
     [sort, setSort] = useState(""),
     [interval, setInterval] = useState("day");
+  const [personal, setPersonal] = useState<{
+    cost_today: number;
+    cost_month: number;
+  } | null>(null);
   const [loaded, setLoaded] = useState<{ path: string; data: Page } | null>(
       null,
     ),
@@ -169,8 +173,23 @@ export function UsageReport({ user }: { user: User }) {
     };
   }, [path, user.credit_version]);
   useEffect(() => {
-    if (!admin) return;
     const ctl = new AbortController();
+    if (!admin) {
+      setSummaryError("");
+      api<{ cost_today: number; cost_month: number }>(
+        "credits/summary/report/",
+        "GET",
+        undefined,
+        ctl.signal,
+      )
+        .then((v) => {
+          if (!ctl.signal.aborted) setPersonal(v);
+        })
+        .catch((e) => {
+          if (!ctl.signal.aborted) setSummaryError(e.message);
+        });
+      return () => ctl.abort();
+    }
     setSummary(null);
     setSummaryError("");
     api<Summary>(
@@ -210,10 +229,23 @@ export function UsageReport({ user }: { user: User }) {
     <section className="report billing-report">
       <h2>{admin ? "گزارش مالی سامانه" : "مصرف و تراکنش‌های من"}</h2>
       {!admin && (
-        <p>
-          ماندهٔ اعتبار {money(user.credit_remaining_rial)} · مصرف خالص{" "}
-          {money(user.credit_used_rial)}
-        </p>
+        <div className="billing-metrics">
+          {(
+            [
+              ["اعتبار قابل استفاده", user.credit_available_rial],
+              ["اعتبار کل", user.credit_limit_rial],
+              ["رزرو فعال", user.credit_reserved_rial],
+              ["مصرف خالص", user.credit_used_rial],
+              ["مصرف امروز", personal?.cost_today],
+              ["مصرف ماه جاری (میلادی)", personal?.cost_month],
+            ] as const
+          ).map(([label, value]) => (
+            <div key={label}>
+              <small>{label}</small>
+              <strong>{value == null ? "—" : money(value)}</strong>
+            </div>
+          ))}
+        </div>
       )}
       {summaryError && <p role="alert">{summaryError}</p>}
       {summary && (

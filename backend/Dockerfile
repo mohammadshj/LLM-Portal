@@ -14,6 +14,7 @@ RUN --mount=type=secret,id=proxy_ca \
     fi
 RUN useradd --create-home portal && mkdir /app/staticfiles && chown portal:portal /app/staticfiles
 COPY --chown=portal:portal backend/ .
+COPY frontend/public/brand/ /app/brand/
 RUN chmod -R a+rX /app
 USER portal
 CMD ["uvicorn", "config.asgi:application", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-graceful-shutdown", "25"]

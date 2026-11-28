@@ -314,17 +314,68 @@ class StreamHTTPTests(TransactionTestCase):
                 closed.set()
 
         chat = self.chats[0]
+        from .billing import change_credit
+
+        await sync_to_async(change_credit)(
+            self.user.pk, "grant", 50, "small grant", "test"
+        )
+        await LanguageModel.objects.filter(pk=self.models[0].pk).aupdate(
+            adaptive_min_output=4, output_price_per_million_rial=1000000
+        )
         with patch("portal.streaming.stream_complete", stalled):
             async with self.open_stream(chat, self.payload(chat)) as stream:
+                start = await stream.until("model_start")
+                self.assertEqual(start["limited_output_tokens"], 50)
                 delta = await stream.until("delta")
                 self.assertEqual(delta["text"], "متن اولیه")
             # open_stream sent http.disconnect; no explicit Stop POST.
             await asyncio.wait_for(closed.wait(), timeout=5)
         row = await Message.objects.aget(conversation=chat, role="assistant")
+        account = await Account.objects.aget(user=self.user)
+        self.assertEqual(account.credit_reserved_rial, 0)
+        self.assertGreater(account.credit_used_rial, 0)
+        self.assertLessEqual(account.credit_used_rial, 50)
         self.assertEqual(
             (row.status, row.content, row.reserved_tokens),
             ("cancelled", "متن اولیه", 0),
         )
+
+    async def test_stopping_one_model_keeps_sibling_stream_and_settlement_alive(self):
+        chat = self.chats[0]
+        payload = self.payload(chat, self.models[:2])
+        release = asyncio.Event()
+
+        async def provider(model, messages, settings):
+            yield ProviderEvent("delta", text=model.name)
+            await release.wait()
+            yield ProviderEvent("delta", text="done")
+            yield ProviderEvent("done")
+
+        with patch("portal.streaming.stream_complete", provider):
+            async with self.open_stream(chat, payload) as stream:
+                await stream.until("delta")
+                url = f"/api/conversations/{chat.pk}/requests/{payload['request_id']}/models/{self.models[0].pk}/cancel/"
+                self.assertEqual(
+                    (await sync_to_async(self.client.post)(url)).status_code, 403
+                )
+                response = await sync_to_async(self.client.post)(
+                    url, HTTP_X_CSRFTOKEN=self.csrf
+                )
+                self.assertEqual(response.json()["status"], "cancelling")
+                event = await stream.until("model_done")
+                self.assertEqual(
+                    (event["model_id"], event["status"]),
+                    (self.models[0].pk, "cancelled"),
+                )
+                release.set()
+                event = await stream.until("model_done")
+                self.assertEqual(
+                    (event["model_id"], event["status"]),
+                    (self.models[1].pk, "completed"),
+                )
+                await stream.until("done")
+        turn = await Message.objects.aget(request_id=payload["request_id"])
+        self.assertEqual(turn.status, "partial")
 
     async def test_disconnect_during_edit_preserves_both_versions(self):
         chat = self.chats[0]

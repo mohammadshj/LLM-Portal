@@ -172,6 +172,33 @@ class ConnectionTests(TestCase):
             ],
         )
 
+    def test_adaptive_limit_reaches_provider_and_is_reloaded_from_history(self):
+        from .billing import change_credit
+
+        self.model_a.adaptive_min_output = 4
+        self.model_a.input_price_per_million_rial = 1000000
+        self.model_a.output_price_per_million_rial = 1000000
+        self.model_a.output_parameter = "max_completion_tokens"
+        self.model_a.save()
+        change_credit(self.user.pk, "grant", 85, "limited", "test")
+        payloads = []
+
+        def handle(request):
+            payloads.append(json.loads(request.content))
+            return success()
+
+        with patch.dict(os.environ, {"LLM_FIRST_API_KEY": "mock"}), upstream(handle):
+            result = self.send_json(self.model_a)
+        self.assertEqual(result["errors"], [])
+        limit = 85 - 2 * self.model_a.framing_tokens - len("hello")
+        self.assertEqual(payloads[0]["max_completion_tokens"], limit)
+        self.assertNotIn("max_tokens", payloads[0])
+        saved = self.api.get(f"/api/conversations/{self.chat.pk}/").data["messages"][-1]
+        self.assertEqual(saved["limited_output_tokens"], limit)
+        self.assertEqual(saved["cost_rial"], 30)
+        self.model_a.refresh_from_db()
+        self.assertGreater(self.model_a.max_output_tokens, limit)
+
     def test_multiple_models_share_one_connection(self):
         extra = LanguageModel.objects.create(
             input_price_per_million_rial=0,

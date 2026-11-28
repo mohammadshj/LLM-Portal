@@ -14,12 +14,15 @@ import type {
 } from "./types";
 
 export type Revision = {
+  onlyModel?: number;
   question: Message;
   content: string;
   replies: Message[];
   changeModels: boolean;
 };
 type Chat = {
+  mode?: "chat" | "compare";
+  single?: number[];
   prompt: string;
   selection?: number[];
   thinking?: Record<number, ReasoningSettings>;
@@ -70,6 +73,8 @@ function applyEvent(live: LiveTurn, event: ChatEvent): LiveTurn {
           return {
             ...m,
             elapsed_ms: event.elapsed_ms ?? 0,
+            started: true,
+            limited_output_tokens: event.limited_output_tokens,
             elapsedSampleAt: performance.now(),
           };
         case "reasoning_delta":
@@ -107,6 +112,7 @@ export function useChats(
   onCreated: (c: Conversation) => void,
   onSettled: () => void,
   onCredit: (credit: Credit) => void,
+  onAccepted: (ids: number[]) => void,
 ) {
   // Draft IDs are negative until POST /conversations/ allocates a database ID.
   const [activeId, setActiveId] = useState(-1);
@@ -343,7 +349,11 @@ export function useChats(
         run.conversation,
         {
           content,
-          model_ids: inherit ? undefined : selected.map((m) => m.id),
+          model_ids: inherit
+            ? revision.onlyModel
+              ? [revision.onlyModel]
+              : undefined
+            : selected.map((m) => m.id),
           reasoning: inherit ? undefined : reasoning,
           edit_of: revision?.question.id,
           expected_leaf: state.detail?.active_leaf ?? null,
@@ -354,6 +364,7 @@ export function useChats(
           if (mounted.current && event.credit) onCredit(event.credit);
           if (event.type === "start") {
             run.started = true;
+            onAccepted(targets.map((m) => m.id));
             if (revision)
               edit(run.conversation, (c) =>
                 c.live?.id === run.id
@@ -491,7 +502,29 @@ export function useChats(
         ...c,
         thinking: { ...c.thinking, [id]: level },
       })),
-    setSelection: (selection: number[]) =>
-      edit(activeId, (c) => ({ ...c, selection })),
+    setMode: (mode: "chat" | "compare", selection: number[]) =>
+      edit(activeId, (c) => ({
+        ...c,
+        mode,
+        ...(mode === "chat" ? { single: selection } : { selection }),
+      })),
+    setFeedback: (
+      chatId: number,
+      messageId: number,
+      feedback: Message["feedback"],
+    ) =>
+      edit(chatId, (c) =>
+        !c.detail
+          ? c
+          : {
+              ...c,
+              detail: {
+                ...c.detail,
+                messages: c.detail.messages.map((m) =>
+                  m.id === messageId ? { ...m, feedback } : m,
+                ),
+              },
+            },
+      ),
   };
 }

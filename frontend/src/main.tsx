@@ -1,16 +1,20 @@
-import { StrictMode, useEffect, useState } from "react";
+import { StrictMode, lazy, Suspense, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api, refreshCsrf } from "./api";
 import "./style.css";
 
 import type { User } from "./types";
-import { Workspace } from "./Workspace";
 import { Brand } from "./ui";
-import { PortalArt } from "./Thread";
-import { ThemeToggle, useTheme } from "./ThemeToggle";
+import { Eye, EyeOff } from "lucide-react";
+import { ThemeSettings, useTheme } from "./ThemeToggle";
+
+const Workspace = lazy(() =>
+  import("./Workspace").then((module) => ({ default: module.Workspace })),
+);
 
 function App() {
-  const { theme, toggle } = useTheme();
+  const { theme, toggle, choice, select } = useTheme();
+  const [visible, setVisible] = useState(false);
   const [user, setUser] = useState<User | null>(null),
     [loading, setLoading] = useState(true);
   const [error, setError] = useState(""),
@@ -52,21 +56,11 @@ function App() {
     return (
       <main className="login">
         <div className="login-shell">
-          <section className="login-intro">
-            <Brand />
-            <PortalArt />
-            <div>
-              <h2>گفتگو و مقایسهٔ مدل‌ها</h2>
-              <p>
-                یک پرسش را به چند مدل بدهید و پاسخ، استدلال و هزینهٔ هر مدل
-                را کنار هم بخوانید.
-              </p>
-            </div>
-          </section>
           <section className="login-card">
             <div className="login-toolbar">
-              <ThemeToggle theme={theme} toggle={toggle} />
+              <ThemeSettings choice={choice} select={select} />
             </div>
+            <Brand variant="login" />
             <h1>ورود به پورتال</h1>
             <p>برای دسترسی به فضای کار، وارد حساب خود شوید.</p>
             <form onSubmit={login}>
@@ -82,14 +76,26 @@ function App() {
               </label>
               <label>
                 رمز عبور
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  dir="ltr"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
+                <span className="password-field">
+                  <input
+                    aria-label="رمز عبور"
+                    type={visible ? "text" : "password"}
+                    autoComplete="current-password"
+                    dir="ltr"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="icon"
+                    aria-label="نمایش رمز عبور"
+                    aria-pressed={visible}
+                    onClick={() => setVisible(!visible)}
+                  >
+                    {visible ? <EyeOff /> : <Eye />}
+                  </button>
+                </span>
               </label>
               <button className="primary" disabled={busy}>
                 {busy ? "در حال ورود…" : "ورود به پورتال ←"}
@@ -106,12 +112,22 @@ function App() {
       </main>
     );
   return (
-    <Workspace
-      theme={theme}
-      toggle={toggle}
-      initialUser={user}
-      onLogout={() => setUser(null)}
-    />
+    <Suspense
+      fallback={
+        <main className="login">
+          <p role="status">در حال آماده‌سازی فضای گفتگو…</p>
+        </main>
+      }
+    >
+      <Workspace
+        theme={theme}
+        toggle={toggle}
+        themeChoice={choice}
+        selectTheme={select}
+        initialUser={user}
+        onLogout={() => setUser(null)}
+      />
+    </Suspense>
   );
 }
 

@@ -1,19 +1,8 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, Layers3, X } from "lucide-react";
+import { Check, Copy, X } from "lucide-react";
 
 export const number = (value: number) => value.toLocaleString("fa-IR");
-export function Brand() {
-  return (
-    <div className="brand" dir="ltr">
-      <span className="brand-mark">
-        <Layers3 size={24} />
-      </span>
-      <strong>
-        LLM <span>Portal</span>
-      </strong>
-    </div>
-  );
-}
+export { Brand } from "./Brand";
 
 export function Dialog({
   title,

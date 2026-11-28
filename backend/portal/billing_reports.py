@@ -348,6 +348,19 @@ def report(request, view, admin):
 
 @api_view(["GET"])
 def personal_report(request, view):
+    if view == "summary":
+        today = timezone.localdate()
+        rows = CreditTransaction.objects.filter(
+            user=request.user, kind="usage", created_at__date__gte=today.replace(day=1)
+        )
+        return Response(
+            rows.aggregate(
+                cost_today=-Sum(
+                    "amount_rial", filter=Q(created_at__date=today), default=0
+                ),
+                cost_month=-Sum("amount_rial", default=0),
+            )
+        )
     if view not in ("transactions", "usage", "trend"):
         raise ValidationError("نمای گزارش معتبر نیست.")
     return report(request, view, False)

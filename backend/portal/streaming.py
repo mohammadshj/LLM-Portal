@@ -89,6 +89,7 @@ class TurnStream:
                         event.output_tokens,
                         total,
                         event.reasoning_tokens,
+                        event.cached_input_tokens,
                     )
                 elif event.kind == "done":
                     return
@@ -125,17 +126,35 @@ class TurnStream:
             progress.reasoning_bytes,
             finished_at=timezone.now(),
         )
-        cost = (
+        saved = (
             await Message.objects.filter(pk=job.reply.pk)
-            .values("cost_rial", "billing_status", "billing_source")
+            .values(
+                "cost_rial",
+                "billing_status",
+                "billing_source",
+                "input_tokens",
+                "output_tokens",
+                "reasoning_tokens",
+                "cached_input_tokens",
+                "total_tokens",
+                "usage_source",
+            )
             .afirst()
         )
-        if cost is not None:
-            cost["free_tariff"] = (
-                job.reply.input_price_snapshot_rial
+        cost = usage = None
+        if saved is not None:
+            cost = {
+                key: saved.pop(key)
+                for key in ("cost_rial", "billing_status", "billing_source")
+            }
+            cost.update(
+                free_tariff=job.reply.input_price_snapshot_rial
                 == job.reply.output_price_snapshot_rial
-                == 0
+                == 0,
+                input_price_snapshot_rial=job.reply.input_price_snapshot_rial,
+                output_price_snapshot_rial=job.reply.output_price_snapshot_rial,
             )
+            usage = saved
         await self.emit(
             job,
             "model_error" if status == "failed" else "model_done",
@@ -144,22 +163,21 @@ class TurnStream:
             elapsed_ms=elapsed_ms,
             billing=cost,
             credit=await self.credit(),
-            usage=(
-                {
-                    "input_tokens": progress.usage.incoming,
-                    "output_tokens": progress.usage.outgoing,
-                    "reasoning_tokens": progress.usage.reasoning,
-                    "total_tokens": progress.usage.total,
-                    "usage_source": "reported",
-                }
-                if progress.usage and progress.usage.total is not None
-                else None
-            ),
+            usage=usage,
         )
 
     async def watch_cancel(self, readers):
         try:
             while not await sync_to_async(should_cancel)(self.turn.pk):
+                cancelled = {
+                    pk
+                    async for pk in Message.objects.filter(
+                        parent_id=self.turn.pk, status="running", cancel_requested=True
+                    ).values_list("pk", flat=True)
+                }
+                for job, reader in zip(self.jobs, readers):
+                    if job.reply.pk in cancelled:
+                        reader.cancel()
                 await asyncio.sleep(POLL_SECONDS)
         finally:
             # The flag lives in PostgreSQL. A Stop handled by a different worker
@@ -183,6 +201,7 @@ class TurnStream:
                 yield (
                     {
                         "type": "model_start",
+                        "limited_output_tokens": job.reply.limited_output_tokens,
                         "elapsed_ms": job.reply.elapsed_ms(),
                         "model_id": job.model.pk,
                         "model_name": job.model.name,

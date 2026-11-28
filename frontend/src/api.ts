@@ -37,8 +37,10 @@ export async function request(
   if (!response.ok) {
     if (response.status === 401 || response.status === 403)
       throw new Error(
-        "دسترسی به این بخش ممکن نیست. وضعیت ورود و دسترسی حساب را بررسی کنید.",
+        "دسترسی به این بخش ممکن نیست. اگر نشست شما پایان یافته است، صفحه را تازه کنید و دوباره وارد شوید.",
       );
+    if (response.status >= 500 && response.status !== 504)
+      throw new Error("سامانه موقتاً در دسترس نیست. دوباره تلاش کنید.");
     if (response.status === 504)
       throw new Error("زمان انتظار برای پاسخ سامانه به پایان رسید.");
     if (response.status === 429)
@@ -62,5 +64,11 @@ export async function api<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   const response = await request(path, method, body, signal);
-  return response.status === 204 ? (undefined as T) : response.json();
+  if (response.status === 204) return undefined as T;
+  try {
+    return await response.json();
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    throw new Error("پاسخ سامانه قابل خواندن نبود. دوباره تلاش کنید.");
+  }
 }

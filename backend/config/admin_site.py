@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.contrib.admin import AdminSite
 from django.contrib.admin.forms import AdminAuthenticationForm
 from portal.permissions import is_portal_admin
@@ -13,6 +14,9 @@ class PortalAdminLoginForm(AdminAuthenticationForm):
 class PortalAdminSite(AdminSite):
     index_template = "admin/portal/finance_index.html"
     login_form = PortalAdminLoginForm
+
+    def each_context(self, request):
+        return {**super().each_context(request), "portal_brand": settings.PORTAL_BRAND}
 
     def has_permission(self, request):
         return is_portal_admin(request.user)

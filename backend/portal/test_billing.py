@@ -116,6 +116,73 @@ class BillingTests(TestCase):
         with self.assertRaises(ProtectedError):
             self.owner.delete()
 
+    def test_adaptive_comparison_settles_failure_and_cancel_independently(self):
+        self.credit("grant", 9000)
+        LanguageModel.objects.filter(pk__in=self.ids).update(adaptive_min_output=8)
+        _, jobs = self.reserve()
+        self.assertLessEqual(self.account().credit_reserved_rial, 9000)
+        for job in jobs:
+            self.assertGreaterEqual(job.model.max_output_tokens, 8)
+            self.assertLess(job.model.max_output_tokens, 1400)
+            self.assertEqual(
+                job.reply.reserved_tokens,
+                job.reply.input_bound + job.model.max_output_tokens,
+            )
+        for job, status in zip(jobs, ["cancelled", "failed"]):
+            finish_reply(job.reply.pk, status, "", Usage(3, 2, 5))
+        self.assertEqual(self.account().credit_reserved_rial, 0)
+        self.assertEqual(self.account().credit_used_rial, 34)
+        self.assertEqual(self.owner.credit_entries.filter(kind="usage").count(), 2)
+
+    def test_pin_and_feedback_are_owned_persistent_and_clearable(self):
+        turn = self.client.patch(
+            f"/api/conversations/{self.chat.pk}/", {"pinned": True}, format="json"
+        )
+        self.assertTrue(turn.data["pinned"])
+        self.assertEqual(turn.data["title"], "private")
+        q = Message.objects.create(conversation=self.chat, role="user", content="q")
+        m = Message.objects.create(
+            conversation=self.chat,
+            parent=q,
+            role="assistant",
+            status="completed",
+            content="a",
+        )
+        path = f"/api/conversations/{self.chat.pk}/messages/{m.pk}/feedback/"
+        for val in ["up", "down", ""]:
+            self.assertEqual(
+                self.client.put(path, {"feedback": val}, format="json").status_code, 200
+            )
+            m.refresh_from_db()
+            self.assertEqual(m.feedback, val)
+        self.assertEqual(
+            self.client.put(path, {"feedback": "other"}, format="json").status_code, 400
+        )
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(
+            self.client.put(path, {"feedback": "up"}, format="json").status_code, 404
+        )
+        self.assertEqual(
+            self.client.patch(
+                f"/api/conversations/{self.chat.pk}/", {"pinned": False}, format="json"
+            ).status_code,
+            404,
+        )
+        self.chat.refresh_from_db()
+        self.assertTrue(self.chat.pinned)
+
+    def test_personal_summary_excludes_other_accounts_and_nonusage_transactions(self):
+        self.acceptance()
+        url = "/api/credits/summary/report/"
+        self.assertEqual(
+            self.client.get(url).data, {"cost_today": 17400, "cost_month": 17400}
+        )
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(
+            self.client.get(url, {"user": self.owner.pk}).data,
+            {"cost_today": 0, "cost_month": 0},
+        )
+
     def test_money_and_rounding(self):
         self.assertEqual(billing.calculate_cost(2000, 1000, 1500000, 12000000), 15000)
         self.assertEqual(billing.calculate_cost(1, 1, 1, 1), 1)
